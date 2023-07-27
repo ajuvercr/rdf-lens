@@ -1,0 +1,22 @@
+{
+  "name": "rdf-lens",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/jest": "^29.5.3",
+    "@types/n3": "^1.16.0",
+    "jest": "^29.6.1",
+    "n3": "^1.17.0",
+    "ts-jest": "^29.1.1",
+    "typescript": "^5.1.6"
+  },
+  "dependencies": {
+    "@rdfjs/types": "^1.1.0"
+  }
+}
