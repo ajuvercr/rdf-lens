@@ -1,8 +1,11 @@
 {
   "compilerOptions": {
-    "target": "es2016",                                  /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
+    // Generate d.ts files
+    "declaration": true,
+    "moduleResolution": "node",
+    "target": "esnext",                                  /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
     /* Modules */
-    "module": "commonjs",                                /* Specify what module code is generated. */
+    "module": "esnext",                                /* Specify what module code is generated. */
     "outDir": "./dist",                                  /* Specify a file that bundles all outputs into one JavaScript file. If 'declaration' is true, also designates a file that bundles all .d.ts output. */
     "rootDir": "./src",                                   /* Specify an output folder for all emitted files. */
     "sourceMap": true,
@@ -15,6 +18,7 @@
     "skipLibCheck": true                                 /* Skip type checking all .d.ts files. */
   },
   "exclude": [
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "dist/**/*"
   ]
 }
