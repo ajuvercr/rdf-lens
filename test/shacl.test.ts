@@ -10,8 +10,6 @@ import {
   object,
   pred,
   subject,
-  subjects,
-  unique,
 } from "../src";
 import { Parser } from "n3";
 

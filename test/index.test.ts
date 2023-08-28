@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { DataFactory, Parser, Store } from "n3";
+import { DataFactory, Parser } from "n3";
 import { pred } from "../src/index";
 const { namedNode, literal } = DataFactory;
 
@@ -47,6 +47,7 @@ describe("ETL", () => {
     const age2 = pred(namedNode("age2")).one(undefined).map((x) => ({
       age2: x?.id.value,
     }));
+
     const person = name.and(age, age2).map((xs) => Object.assign(...xs));
 
     const p = person.execute({ id: namedNode("person"), quads });
