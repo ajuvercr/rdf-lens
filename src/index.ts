@@ -1,5 +1,7 @@
 import type { Quad, Term } from "@rdfjs/types";
 
+export * as shacl from "./shacl";
+
 export type Cont<Q = Term> = { id: Q; quads: Quad[] };
 export type Res<T> = [Term, T];
 
