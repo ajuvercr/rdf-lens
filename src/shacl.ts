@@ -9,7 +9,7 @@ import {
   pred,
   subjects,
   unique,
-} from ".";
+} from "./lens";
 
 export const RDFS = createTermNamespace(
   "http://www.w3.org/2000/01/rdf-schema#",
