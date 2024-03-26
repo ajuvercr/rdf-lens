@@ -1,7 +1,7 @@
 {
-  "name": "@jenspots/template-ts",
+  "name": "@rdf-connect/template-processor-ts",
   "version": "0.0.0",
-  "description": "TypeScript processor template for the Connection Architecture",
+  "description": "Template to kickstart the development of your next TypeScript processor.",
   "main": "lib/index.js",
   "files": [
     "lib/**/*",
@@ -15,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://gitlab.ilabt.imec.be/KNoWS/projects/connector-architecture/template-ts"
+    "url": "https://github.com/rdf-connect/template-processor-ts"
   },
   "author": "Jens Pots",
   "license": "MIT",

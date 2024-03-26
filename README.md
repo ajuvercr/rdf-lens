@@ -1,4 +1,6 @@
-# processor-template-ts
+# template-processor-ts
+
+[![Build and tests with Node.js](https://github.com/rdf-connect/template-processor-ts/actions/workflows/build-test.yml/badge.svg)](https://github.com/rdf-connect/template-processor-ts/actions/workflows/build-test.yml)
 
 This repository contains a fully functioning dummy implementation of a logging processor written in TypeScript, meant to be used as a template in order to kickstart the development of your next processor.
 
