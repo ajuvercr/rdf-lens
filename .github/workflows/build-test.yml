@@ -1,4 +1,4 @@
-name: Build and test with Node.js
+name: Build and tests with Node.js
 
 on:
     push:
@@ -21,4 +21,4 @@ jobs:
 
             - run: npm ci
             - run: npm run build
-            - run: npm run test
+            - run: npm run tests
