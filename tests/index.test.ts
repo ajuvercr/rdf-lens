@@ -1,10 +1,10 @@
 import { log } from "../src";
 import { SimpleStream } from "@ajuvercr/js-runner";
-import { expect } from "@jest/globals";
+import { expect, describe, test, vi } from "vitest";
 
 describe("log", () => {
     test("successful", async () => {
-        const consoleLog = jest.spyOn(console, "log").mockImplementation();
+        const consoleLog = vi.spyOn(console, "log");
         expect.assertions(7);
 
         const incoming = new SimpleStream<string>();

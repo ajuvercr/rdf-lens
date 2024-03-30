@@ -1,4 +1,4 @@
-import { expect, test, describe } from "@jest/globals";
+import { expect, test, describe } from "vitest";
 import { extractProcessors, extractSteps, Source } from "@ajuvercr/js-runner";
 
 const pipeline = `
