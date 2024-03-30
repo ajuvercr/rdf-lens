@@ -10,7 +10,7 @@ At the time of writing, this repositories sets up the following boilerplate and 
 
 - Placeholder implementation of a processor which accepts input from a stream, logs it to the console, and pipes it back into the outgoing stream.
 - An initial `processor.ttl` file.
-- Jest configuration unit testing, including GitHub Actions configuration.
+- Vitest configuration unit testing, including GitHub Actions configuration.
 - Dependabot notifications for dependency updates.
 - Convenient publishing to GitHub Packages for every new release.
 - ESLint/Prettier linting and styling, including a Husky git hook in combination with lint-staged.
