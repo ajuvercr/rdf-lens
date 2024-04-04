@@ -97,6 +97,7 @@ export function toLens(
 const RDFListElement = pred(RDF.terms.first)
   .one()
   .and(pred(RDF.terms.rest).one());
+
 export const RdfList: BasicLens<Cont, Term[]> = new BasicLens((c) => {
   if (c.id.equals(RDF.terms.nil)) {
     return [];
@@ -273,7 +274,11 @@ function extractProperty(
           if (!lens) {
             throw `Tried extracting class ${expected_class} but no shape was defined`;
           }
-          return lens.execute({ id, quads });
+          if (apply[expected_class]) {
+            return lens.map(apply[expected_class]).execute({ id, quads });
+          } else {
+            return lens.execute({ id, quads });
+          }
         }
 
         // We found a type, let's see if the expected class is inside the class hierachry
