@@ -3,6 +3,7 @@ import { Quad } from "@rdfjs/types";
 import { RDF } from "@treecg/types";
 import { Parser } from "n3";
 import { extractShapes } from "../src/shacl";
+import { RDFL } from "../src/ontology";
 
 const prefixes = `
 @prefix js: <https://w3id.org/conn/js#> .
@@ -297,5 +298,82 @@ ${prefixes}
     expect(obj.x).toBe("x");
     expect(obj.y).toBe("y");
   });
-});
 
+  describe.only("Testing custom RDFL lenses", () => {
+    const shape = `
+${prefixes}
+@prefix rdfl: <https://w3id.org/rdf-lens/ontology#>.
+
+[] a sh:NodeShape;
+  sh:targetClass js:Point;
+  sh:property [
+    sh:class rdfl:CBD;
+    sh:path <cbd>;
+    sh:name "cbd";
+    sh:maxCount 1;
+  ], [
+    sh:datatype xsd:iri;
+    sh:path ( );
+    sh:name "id";
+    sh:maxCount 1;
+  ], [
+    sh:class rdfl:PathLens;
+    sh:path <path>;
+    sh:name "path";
+    sh:maxCount 1;
+  ], [
+    sh:class rdfl:Context;
+    sh:path <context>;
+    sh:name "context";
+    sh:maxCount 1;
+  ].
+`;
+    const data = `
+${prefixes}
+<abc> a js:Point;
+  <context> [ ];
+  <cbd> [
+<a> [ <b> 2; <c> 5];
+  <d> 42;
+];
+  <path> (<a> <b>);
+    <a> [ <b> "Hello" ].
+`;
+
+    const output = extractShapes(parseQuads(shape));
+
+    const quads = parseQuads(data);
+    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+    const obj = output.lenses[quad.object.value].execute({
+      id: quad.subject,
+      quads,
+    });
+
+    test("Shapes contain rdfl lenses", () => {
+      const shapes = Object.keys(output.lenses);
+      expect(shapes).toContain(RDFL.Context);
+      expect(shapes).toContain(RDFL.CBD);
+      expect(shapes).toContain(RDFL.PathLens);
+    });
+
+    test("Keys are present", () => {
+      const keys = Object.keys(obj);
+      expect(keys).toContain("path");
+      expect(keys).toContain("cbd");
+      expect(keys).toContain("context");
+    });
+
+    test("Context quads are found", () => {
+      expect(obj.context.length).toEqual(quads.length);
+    });
+
+    test("Path applied to object works", () => {
+      const result = obj.path.execute({ id: obj.id, quads: obj.context });
+      expect(result[0].id.value).toEqual("Hello");
+    });
+
+    test("CBD works", () => {
+      expect(obj.cbd.length).toBe(4);
+    });
+  });
+});

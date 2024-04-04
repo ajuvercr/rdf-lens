@@ -1,5 +1,5 @@
 import { Quad, Term } from "@rdfjs/types";
-import { createTermNamespace, RDF, XSD } from "@treecg/types";
+import { RDF, XSD } from "@treecg/types";
 import {
   BasicLens,
   BasicLensM,
@@ -10,38 +10,7 @@ import {
   subjects,
   unique,
 } from "./lens";
-
-export const RDFS = createTermNamespace(
-  "http://www.w3.org/2000/01/rdf-schema#",
-  "subClassOf",
-);
-
-export const SHACL = createTermNamespace(
-  "http://www.w3.org/ns/shacl#",
-  // Basics
-  "Shape",
-  "NodeShape",
-  "PropertyShape",
-  // SHACL target constraints
-  "targetNode",
-  "targetClass",
-  "targetSubjectsOf",
-  "targetObjectsOf",
-  // Property things
-  "property",
-  "path",
-  "class",
-  "name",
-  "description",
-  "defaultValue",
-  // Path things
-  "alternativePath",
-  "zeroOrMorePath",
-  "inversePath",
-  "minCount",
-  "maxCount",
-  "datatype",
-);
+import { RDFL, RDFS, SHACL } from "./ontology";
 
 export interface ShapeField {
   name: string;
@@ -49,7 +18,6 @@ export interface ShapeField {
   minCount?: number;
   maxCount?: number;
   extract: BasicLens<Cont, any>;
-  // extract: (term: Term, quads: Quad[]) => any;
 }
 
 export interface Shape {
@@ -323,10 +291,31 @@ function extractProperty(
     .map((xs) => Object.assign({}, ...xs));
 }
 
+export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
+  const done = new Set<string>();
+  const todo = [id];
+  const out = [];
+  let item = todo.pop();
+  while (item) {
+    const found = quads.filter((x) => x.subject.equals(item));
+    out.push(...found);
+    for (let option of found
+      .map((x) => x.object)
+      .filter((x) => x.termType === "BlankNode")) {
+      if (done.has(option.value)) continue;
+      done.add(option.value);
+      todo.push(option);
+    }
+    item = todo.pop();
+  }
+  return out;
+});
+
+export type ApplyDict = { [label: string]: (item: any) => any };
 export function extractShape(
   cache: Cache,
   subclasses: { [label: string]: string },
-  apply: { [label: string]: (item: any) => any },
+  apply: ApplyDict,
 ): BasicLens<Cont, Shape[]> {
   const checkTy = pred(RDF.terms.type)
     .one()
@@ -359,15 +348,18 @@ export type Shapes = {
   subClasses: SubClasses;
 };
 
-export function extractShapes(
-  quads: Quad[],
-  apply: { [label: string]: (item: any) => any } = {},
-): Shapes {
+export function extractShapes(quads: Quad[], apply: ApplyDict = {}): Shapes {
   const cache: Cache = {};
+  cache[RDFL.PathLens] = ShaclPath;
+  cache[RDFL.CBD] = CBDLens;
+  cache[RDFL.Context] = new BasicLens(({ quads }) => {
+    return quads;
+  });
   const subClasses: SubClasses = {};
   quads
     .filter((x) => x.predicate.equals(RDFS.subClassOf))
     .forEach((x) => (subClasses[x.subject.value] = x.object.value));
+
   const shapes = subjects()
     .then(unique())
     .asMulti()
