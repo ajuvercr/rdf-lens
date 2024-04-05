@@ -2,13 +2,14 @@
   "name": "@rdf-connect/template-processor-ts",
   "version": "0.0.0",
   "description": "Template to kickstart the development of your next TypeScript processor.",
+  "type": "module",
   "main": "lib/index.js",
   "files": [
     "lib/**/*",
     "./processors.ttl"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc-alias",
     "test": "vitest run --coverage --coverage.include src",
     "prepare": "husky"
   },
@@ -31,6 +32,7 @@
     "lint-staged": "^15.2.2",
     "prettier": "^3.2.5",
     "ts-node": "^10.9.2",
+    "tsc-alias": "^1.8.8",
     "typescript": "^5.4.3",
     "vite-tsconfig-paths": "^4.3.2",
     "vitest": "^1.4.0"
