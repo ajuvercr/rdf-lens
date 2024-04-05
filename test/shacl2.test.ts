@@ -14,6 +14,7 @@ const prefixes = `
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#>.
 @prefix dc: <http://purl.org/dc/elements/1.1/>.
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#>.
+@prefix rdfl: <https://w3id.org/rdf-lens/ontology#>.
 `;
 
 const shapes = `
@@ -36,11 +37,13 @@ js:3DPoint rdfs:subClassOf js:Point.
     sh:path js:x;
     sh:name "x";
     sh:maxCount 1;
+    sh:minCount 1;
   ], [
     sh:datatype xsd:integer;
     sh:path js:y;
     sh:name "y";
     sh:maxCount 1;
+    sh:minCount 1;
   ].
   
 js:JsProcessorShape a sh:NodeShape;
@@ -63,9 +66,14 @@ js:JsProcessorShape a sh:NodeShape;
   ], [
     sh:path :point;
     sh:class js:Point;
-    sh:name "point";
+    sh:name "certainPoint";
     sh:maxCount 1;
     sh:minCount 1;
+  ], [
+    sh:path :point;
+    sh:class rdfl:TypedExtract;
+    sh:name "dataPoint";
+    sh:maxCount 1;
   ].
 `;
 
@@ -105,8 +113,10 @@ ${prefixes}
     expect(object.required).toBe("true");
     expect(object.multiple).toEqual(["one!"]);
     expect(object.atLeast).toEqual(["two!"]);
-    expect(object.point.x).toBe(5);
-    expect(object.point.y).toBe(42);
+    expect(object.certainPoint.x).toBe(5);
+    expect(object.certainPoint.y).toBe(42);
+    expect(object.dataPoint.x).toBe(5);
+    expect(object.dataPoint.y).toBe(42);
   });
 
   test("Invalid objects", () => {
@@ -158,9 +168,9 @@ ${prefixes}
       id: quad.subject,
       quads,
     });
-    expect(object.point.z).toBe(64);
-    expect(object.point.x).toBe(5);
-    expect(object.point.y).toBe(42);
+    expect(object.dataPoint.z).toBe(64);
+    expect(object.dataPoint.x).toBe(5);
+    expect(object.dataPoint.y).toBe(42);
   });
 
   test("Parse objects without type", () => {
@@ -184,8 +194,9 @@ ${prefixes}
       quads,
     });
 
-    expect(object.point.x).toBe(5);
-    expect(object.point.y).toBe(42);
+    expect(object.certainPoint.x).toBe(5);
+    expect(object.certainPoint.y).toBe(42);
+    expect(object.dataPoint).toBeUndefined();
   });
 
   test("Parse fake subclassed objects fail", () => {
@@ -299,10 +310,9 @@ ${prefixes}
     expect(obj.y).toBe("y");
   });
 
-  describe.only("Testing custom RDFL lenses", () => {
+  describe("Testing custom RDFL lenses", () => {
     const shape = `
 ${prefixes}
-@prefix rdfl: <https://w3id.org/rdf-lens/ontology#>.
 
 [] a sh:NodeShape;
   sh:targetClass js:Point;
@@ -326,18 +336,37 @@ ${prefixes}
     sh:path <context>;
     sh:name "context";
     sh:maxCount 1;
+  ], [
+    sh:class rdfl:TypedExtract;
+    sh:path <custom>;
+    sh:name "custom";
+    sh:maxCount 1;
   ].
+
+[] a sh:NodeShape;
+  sh:targetClass js:MyCustomClass;
+  sh:property [
+    sh:datatype xsd:string;
+    sh:path js:value;
+    sh:name "value";
+    sh:maxCount 1;
+    sh:minCount 1;
+].
 `;
     const data = `
 ${prefixes}
 <abc> a js:Point;
   <context> [ ];
   <cbd> [
-<a> [ <b> 2; <c> 5];
-  <d> 42;
-];
+    <a> [ <b> 2; <c> 5];
+      <d> 42;
+  ];
   <path> (<a> <b>);
-    <a> [ <b> "Hello" ].
+  <a> [ <b> "Hello" ];
+  <custom> [
+    a js:MyCustomClass;
+    js:value "VALUE";
+  ].
 `;
 
     const output = extractShapes(parseQuads(shape));
@@ -374,6 +403,10 @@ ${prefixes}
 
     test("CBD works", () => {
       expect(obj.cbd.length).toBe(4);
+    });
+
+    test("Custom extract works", () => {
+      expect(obj.custom.value).toBe("VALUE");
     });
   });
 });

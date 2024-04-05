@@ -229,58 +229,15 @@ function extractProperty(
   ).map(({ clazz: expected_class }) => {
     return {
       extract: new BasicLens<Cont, any>(({ id, quads }) => {
-        // How do I extract this value: use a pre
-        let found_class = false;
-
-        const ty = quads.find(
-          (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
-        )?.object.value;
-
-        if (!ty) {
-          // We did not find a type, so use the expected class lens
-          const lens = cache[expected_class];
-          if (!lens) {
-            throw `Tried extracting class ${expected_class} but no shape was defined`;
-          }
-          if (apply[expected_class]) {
-            return lens.map(apply[expected_class]).execute({ id, quads });
-          } else {
-            return lens.execute({ id, quads });
-          }
+        // We did not find a type, so use the expected class lens
+        const lens = cache[expected_class];
+        if (!lens) {
+          throw `Tried extracting class ${expected_class} but no shape was defined`;
         }
-
-        // We found a type, let's see if the expected class is inside the class hierachry
-        const lenses: (typeof cache)[string][] = [];
-
-        let current = ty;
-        while (!!current) {
-          if (lenses.length < 2) {
-            const lens = cache[current];
-            if (lens) {
-              lenses.push(lens);
-            }
-          }
-          found_class = found_class || current === expected_class;
-          current = subClasses[current];
-        }
-
-        if (!found_class) {
-          throw `${ty} is not a subClassOf ${expected_class}`;
-        }
-
-        if (lenses.length === 0) {
-          throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
-        }
-
-        const finalLens =
-          lenses.length == 1
-            ? lenses[0]
-            : lenses[0].and(lenses[1]).map(([a, b]) => Object.assign({}, a, b));
-
-        if (apply[ty]) {
-          return finalLens.map(apply[ty]).execute({ id, quads });
+        if (apply[expected_class]) {
+          return lens.map(apply[expected_class]).execute({ id, quads });
         } else {
-          return finalLens.execute({ id, quads });
+          return lens.execute({ id, quads });
         }
       }),
     };
@@ -310,6 +267,54 @@ export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
   }
   return out;
 });
+
+export const TypedExtract = function (
+  cache: Cache,
+  apply: ApplyDict,
+  subClasses: SubClasses,
+): BasicLens<Cont, any> {
+  return new BasicLens(({ id, quads }) => {
+    const ty = quads.find(
+      (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
+    )?.object.value;
+
+    if (!ty) {
+      return;
+    }
+
+    // We found a type, let's see if the expected class is inside the class hierachry
+    const lenses: (typeof cache)[string][] = [];
+
+    let current = ty;
+    while (!!current) {
+      const lens = cache[current];
+      if (lens) {
+        lenses.push(lens);
+      }
+      current = subClasses[current];
+    }
+
+    if (lenses.length === 0) {
+      // Maybe we just return here
+      // Or we log
+      // Or we make it conditional
+      throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
+    }
+
+    const finalLens =
+      lenses.length == 1
+        ? lenses[0]
+        : lenses[0]
+            .and(...lenses.slice(1))
+            .map((xs) => Object.assign({}, ...xs));
+
+    if (apply[ty]) {
+      return finalLens.map(apply[ty]).execute({ id, quads });
+    } else {
+      return finalLens.execute({ id, quads });
+    }
+  });
+};
 
 export type ApplyDict = { [label: string]: (item: any) => any };
 export function extractShape(
@@ -367,6 +372,8 @@ export function extractShapes(quads: Quad[], apply: ApplyDict = {}): Shapes {
     .execute(quads)
     .flat();
   const lenses = [];
+
+  cache[RDFL.TypedExtract] = TypedExtract(cache, apply, subClasses);
 
   // Populate cache
   for (let shape of shapes) {

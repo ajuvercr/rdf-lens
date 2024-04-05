@@ -35,5 +35,6 @@ export const RDFL = createUriAndTermNamespace(
   "https://w3id.org/rdf-lens/ontology#",
   "CBD",
   "PathLens",
-  "Context"
+  "Context",
+  "TypedExtract",
 );

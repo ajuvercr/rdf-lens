@@ -20,19 +20,23 @@ const quads = new Parser().parse(quadsLiteral);
 
 describe("ETL", () => {
   test("simple extract works", () => {
-    const res = pred(tyPred).one().execute({ id: namedNode("s1"), quads });
+    const res = pred(tyPred)
+      .one()
+      .execute({ id: namedNode("s1"), quads });
     expect(res.id.equals(namedNode("sometype"))).toBeTruthy();
   });
 
   test("dense extract works", () => {
-    const res = pred(tyPred).one()
+    const res = pred(tyPred)
+      .one()
       .then(pred(namedNode("p2")).one())
       .execute({ id: namedNode("s1"), quads });
     expect(res.id.equals(literal("42"))).toBeTruthy();
   });
 
   test("simple extract and map works", () => {
-    const res = pred(tyPred).one()
+    const res = pred(tyPred)
+      .one()
       .then(pred(namedNode("p2")).one())
       .map((x) => +x.id.value)
       .execute({ id: namedNode("s1"), quads });
@@ -40,13 +44,19 @@ describe("ETL", () => {
   });
 
   test("combined extract to dict", () => {
-    const name = pred(namedNode("name")).one().map((x) => ({
-      name: x.id.value,
-    }));
-    const age = pred(namedNode("age")).one().map((x) => ({ age: +x.id.value }));
-    const age2 = pred(namedNode("age2")).one(undefined).map((x) => ({
-      age2: x?.id.value,
-    }));
+    const name = pred(namedNode("name"))
+      .one()
+      .map((x) => ({
+        name: x.id.value,
+      }));
+    const age = pred(namedNode("age"))
+      .one()
+      .map((x) => ({ age: +x.id.value }));
+    const age2 = pred(namedNode("age2"))
+      .one(undefined)
+      .map((x) => ({
+        age2: x?.id.value,
+      }));
 
     const person = name.and(age, age2).map((xs) => Object.assign(...xs));
 
