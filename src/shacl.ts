@@ -353,8 +353,18 @@ export type Shapes = {
   subClasses: SubClasses;
 };
 
-export function extractShapes(quads: Quad[], apply: ApplyDict = {}): Shapes {
-  const cache: Cache = {};
+/**
+ * @param quads that should be used to extarct shapes from
+ * @param [apply={}] optional apply functions that after extraction are applied to the parsed objects
+ * @param [customClasses={}] lenses that are used to extract special objects types
+ */
+export function extractShapes(
+  quads: Quad[],
+  apply: ApplyDict = {},
+  customClasses: Cache = {},
+): Shapes {
+  const cache: Cache = Object.assign({}, customClasses);
+
   cache[RDFL.PathLens] = ShaclPath;
   cache[RDFL.CBD] = CBDLens;
   cache[RDFL.Context] = new BasicLens(({ quads }) => {
