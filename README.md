@@ -113,8 +113,7 @@ console.log(point); // { "x": 5, "y": 8 }
 ```
 
 
-**Deep objects**
-Deep objects are also supported, let's reuse the point shape to extract a line.
+**Deep objects** are also supported, let's reuse the point shape to extract a line.
 
 ```turtle
 [] a sh:NodeShape;
@@ -136,8 +135,8 @@ Deep objects are also supported, let's reuse the point shape to extract a line.
 
 Note: `sh:datatype` is used for literals, `sh:class` is used for objects.
 
-`sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
-`sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
+* `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
+* `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
 
 
 
@@ -145,8 +144,8 @@ Note: `sh:datatype` is used for literals, `sh:class` is used for objects.
 Sometimes a plain old javascript objects is not enough, some special classes work out of the box.
 `@prefix rdfs: <https://w3id.org/rdf-lens/ontology#>.`
 
-`rdfl:CBD`: Provides a list of quads bounded by the cbd algorithm.
-`rdfl:PathLens`: Parses a shacl Path and returns a Lens that resolves this path.
-`rdfl:Context`: Provides a reference to the list of all data quads.
-`rdfl:TypeExtract`: Extracts according to the `rdf:type` object (including class hierarchy), by using the shape that corresponds to that type.
+* `rdfl:CBD`: Provides a list of quads bounded by the cbd algorithm.
+* `rdfl:PathLens`: Parses a shacl Path and returns a Lens that resolves this path.
+* `rdfl:Context`: Provides a reference to the list of all data quads.
+* `rdfl:TypeExtract`: Extracts according to the `rdf:type` object (including class hierarchy), by using the shape that corresponds to that type.
 
