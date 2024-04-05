@@ -68,7 +68,84 @@ const RdfList: BasicLens<Cont, Term[]> = new BasicLens((c) => {
 });
 ```
 
+### Extracting starting from shacl shapes
 
-Take a look at the tests to see how to extract Shacl shapes using RDF Lenses.
+Shacl shapes are used widely to constrain rdf data to some shape.
+With rdf-lens you can extract data starting from a shape to a plain old javascript object.
+The field names are defined by the `sh:name`, that is part of the `sh:property` object.
 
+This examples shows how to define and extract a point.
+```turtle
+# The shacl shape for a point
+[] a sh:NodeShape;
+  sh:targetClass <Point>; # Derive a lens for js:Point
+  sh:property [
+    sh:name "x";             # Field x
+    sh:path <x>;            # is found at path `js:x`
+    sh:datatype xsd:integer; # and is an integer
+    sh:maxCount 1;
+    sh:minCount 1;
+  ], [
+    sh:datatype xsd:integer;
+    sh:path <y>;
+    sh:name "y";
+    sh:maxCount 1;
+    sh:minCount 1;
+  ].
+```
+
+```turtle
+# Data that adheres to that shape
+<MyPoint> a <Point>;
+  <x> 5;
+  <y> 8.
+```
+
+Let's use this data to extract a point.
+```typescript
+const shapes = extractShapes(shapeQuads);
+const quads = parseQuads(dataQuads);
+
+const lens = shapes.lenses["Point"]; // The lens that extracts a point
+const point = lens.execute({id: namedNode("MyPoint"), quads});
+
+console.log(point); // { "x": 5, "y": 8 }
+```
+
+
+**Deep objects** are also supported, let's reuse the point shape to extract a line.
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Line>;
+  sh:property [
+    sh:name "start";  // The start is a point
+    sh:path <start>;
+    sh:class <Point>;
+    sh:maxCount 1;
+    sh:minCount 1;
+  ], [
+    sh:name "end";    // The end is a point
+    sh:path <end>;
+    sh:class <Point>;
+    sh:maxCount 1;
+    sh:minCount 1;
+  ].
+```
+
+Note: `sh:datatype` is used for literals, `sh:class` is used for objects.
+
+* `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
+* `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
+
+
+
+**Special implemented classes**
+Sometimes a plain old javascript objects is not enough, some special classes work out of the box.
+`@prefix rdfs: <https://w3id.org/rdf-lens/ontology#>.`
+
+* `rdfl:CBD`: Provides a list of quads bounded by the cbd algorithm.
+* `rdfl:PathLens`: Parses a shacl Path and returns a Lens that resolves this path.
+* `rdfl:Context`: Provides a reference to the list of all data quads.
+* `rdfl:TypeExtract`: Extracts according to the `rdf:type` object (including class hierarchy), by using the shape that corresponds to that type.
 

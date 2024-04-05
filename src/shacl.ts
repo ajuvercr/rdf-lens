@@ -1,5 +1,5 @@
 import { Quad, Term } from "@rdfjs/types";
-import { createTermNamespace, RDF, XSD } from "@treecg/types";
+import { RDF, XSD } from "@treecg/types";
 import {
   BasicLens,
   BasicLensM,
@@ -10,38 +10,7 @@ import {
   subjects,
   unique,
 } from "./lens";
-
-export const RDFS = createTermNamespace(
-  "http://www.w3.org/2000/01/rdf-schema#",
-  "subClassOf",
-);
-
-export const SHACL = createTermNamespace(
-  "http://www.w3.org/ns/shacl#",
-  // Basics
-  "Shape",
-  "NodeShape",
-  "PropertyShape",
-  // SHACL target constraints
-  "targetNode",
-  "targetClass",
-  "targetSubjectsOf",
-  "targetObjectsOf",
-  // Property things
-  "property",
-  "path",
-  "class",
-  "name",
-  "description",
-  "defaultValue",
-  // Path things
-  "alternativePath",
-  "zeroOrMorePath",
-  "inversePath",
-  "minCount",
-  "maxCount",
-  "datatype",
-);
+import { RDFL, RDFS, SHACL } from "./ontology";
 
 export interface ShapeField {
   name: string;
@@ -49,7 +18,6 @@ export interface ShapeField {
   minCount?: number;
   maxCount?: number;
   extract: BasicLens<Cont, any>;
-  // extract: (term: Term, quads: Quad[]) => any;
 }
 
 export interface Shape {
@@ -261,58 +229,15 @@ function extractProperty(
   ).map(({ clazz: expected_class }) => {
     return {
       extract: new BasicLens<Cont, any>(({ id, quads }) => {
-        // How do I extract this value: use a pre
-        let found_class = false;
-
-        const ty = quads.find(
-          (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
-        )?.object.value;
-
-        if (!ty) {
-          // We did not find a type, so use the expected class lens
-          const lens = cache[expected_class];
-          if (!lens) {
-            throw `Tried extracting class ${expected_class} but no shape was defined`;
-          }
-          if (apply[expected_class]) {
-            return lens.map(apply[expected_class]).execute({ id, quads });
-          } else {
-            return lens.execute({ id, quads });
-          }
+        // We did not find a type, so use the expected class lens
+        const lens = cache[expected_class];
+        if (!lens) {
+          throw `Tried extracting class ${expected_class} but no shape was defined`;
         }
-
-        // We found a type, let's see if the expected class is inside the class hierachry
-        const lenses: (typeof cache)[string][] = [];
-
-        let current = ty;
-        while (!!current) {
-          if (lenses.length < 2) {
-            const lens = cache[current];
-            if (lens) {
-              lenses.push(lens);
-            }
-          }
-          found_class = found_class || current === expected_class;
-          current = subClasses[current];
-        }
-
-        if (!found_class) {
-          throw `${ty} is not a subClassOf ${expected_class}`;
-        }
-
-        if (lenses.length === 0) {
-          throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
-        }
-
-        const finalLens =
-          lenses.length == 1
-            ? lenses[0]
-            : lenses[0].and(lenses[1]).map(([a, b]) => Object.assign({}, a, b));
-
-        if (apply[ty]) {
-          return finalLens.map(apply[ty]).execute({ id, quads });
+        if (apply[expected_class]) {
+          return lens.map(apply[expected_class]).execute({ id, quads });
         } else {
-          return finalLens.execute({ id, quads });
+          return lens.execute({ id, quads });
         }
       }),
     };
@@ -323,10 +248,79 @@ function extractProperty(
     .map((xs) => Object.assign({}, ...xs));
 }
 
+export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
+  const done = new Set<string>();
+  const todo = [id];
+  const out = [];
+  let item = todo.pop();
+  while (item) {
+    const found = quads.filter((x) => x.subject.equals(item));
+    out.push(...found);
+    for (let option of found
+      .map((x) => x.object)
+      .filter((x) => x.termType === "BlankNode")) {
+      if (done.has(option.value)) continue;
+      done.add(option.value);
+      todo.push(option);
+    }
+    item = todo.pop();
+  }
+  return out;
+});
+
+export const TypedExtract = function (
+  cache: Cache,
+  apply: ApplyDict,
+  subClasses: SubClasses,
+): BasicLens<Cont, any> {
+  return new BasicLens(({ id, quads }) => {
+    const ty = quads.find(
+      (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
+    )?.object.value;
+
+    if (!ty) {
+      return;
+    }
+
+    // We found a type, let's see if the expected class is inside the class hierachry
+    const lenses: (typeof cache)[string][] = [];
+
+    let current = ty;
+    while (!!current) {
+      const lens = cache[current];
+      if (lens) {
+        lenses.push(lens);
+      }
+      current = subClasses[current];
+    }
+
+    if (lenses.length === 0) {
+      // Maybe we just return here
+      // Or we log
+      // Or we make it conditional
+      throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
+    }
+
+    const finalLens =
+      lenses.length == 1
+        ? lenses[0]
+        : lenses[0]
+            .and(...lenses.slice(1))
+            .map((xs) => Object.assign({}, ...xs));
+
+    if (apply[ty]) {
+      return finalLens.map(apply[ty]).execute({ id, quads });
+    } else {
+      return finalLens.execute({ id, quads });
+    }
+  });
+};
+
+export type ApplyDict = { [label: string]: (item: any) => any };
 export function extractShape(
   cache: Cache,
   subclasses: { [label: string]: string },
-  apply: { [label: string]: (item: any) => any },
+  apply: ApplyDict,
 ): BasicLens<Cont, Shape[]> {
   const checkTy = pred(RDF.terms.type)
     .one()
@@ -359,15 +353,28 @@ export type Shapes = {
   subClasses: SubClasses;
 };
 
+/**
+ * @param quads that should be used to extarct shapes from
+ * @param [apply={}] optional apply functions that after extraction are applied to the parsed objects
+ * @param [customClasses={}] lenses that are used to extract special objects types
+ */
 export function extractShapes(
   quads: Quad[],
-  apply: { [label: string]: (item: any) => any } = {},
+  apply: ApplyDict = {},
+  customClasses: Cache = {},
 ): Shapes {
-  const cache: Cache = {};
+  const cache: Cache = Object.assign({}, customClasses);
+
+  cache[RDFL.PathLens] = ShaclPath;
+  cache[RDFL.CBD] = CBDLens;
+  cache[RDFL.Context] = new BasicLens(({ quads }) => {
+    return quads;
+  });
   const subClasses: SubClasses = {};
   quads
     .filter((x) => x.predicate.equals(RDFS.subClassOf))
     .forEach((x) => (subClasses[x.subject.value] = x.object.value));
+
   const shapes = subjects()
     .then(unique())
     .asMulti()
@@ -375,6 +382,8 @@ export function extractShapes(
     .execute(quads)
     .flat();
   const lenses = [];
+
+  cache[RDFL.TypedExtract] = TypedExtract(cache, apply, subClasses);
 
   // Populate cache
   for (let shape of shapes) {
