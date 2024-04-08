@@ -1,2 +1,2 @@
 export * from "./lens";
-export * as shacl from "./shacl";
+export * from "./shacl";

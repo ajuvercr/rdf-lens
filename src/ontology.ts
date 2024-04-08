@@ -37,4 +37,7 @@ export const RDFL = createUriAndTermNamespace(
   "PathLens",
   "Context",
   "TypedExtract",
+  "EnvVariable",
+  "envKey",
+  "envDefault"
 );

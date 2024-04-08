@@ -26,6 +26,7 @@ ${prefixes}
     sh:path js:z;
     sh:name "z";
     sh:maxCount 1;
+    sh:minCount 1;
   ].
 
 js:3DPoint rdfs:subClassOf js:Point.
@@ -74,6 +75,7 @@ js:JsProcessorShape a sh:NodeShape;
     sh:class rdfl:TypedExtract;
     sh:name "dataPoint";
     sh:maxCount 1;
+    sh:minCount 1;
   ].
 `;
 
@@ -168,9 +170,10 @@ ${prefixes}
       id: quad.subject,
       quads,
     });
-    expect(object.dataPoint.z).toBe(64);
+
     expect(object.dataPoint.x).toBe(5);
     expect(object.dataPoint.y).toBe(42);
+    expect(object.dataPoint.z).toBe(64);
   });
 
   test("Parse objects without type", () => {
@@ -376,7 +379,7 @@ ${prefixes}
     const obj = output.lenses[quad.object.value].execute({
       id: quad.subject,
       quads,
-    });
+    }, []);
 
     test("Shapes contain rdfl lenses", () => {
       const shapes = Object.keys(output.lenses);
