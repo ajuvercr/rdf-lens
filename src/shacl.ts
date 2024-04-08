@@ -10,7 +10,11 @@ import {
   subjects,
   unique,
 } from "./lens";
+
+import { DataFactory } from "rdf-data-factory";
 import { RDFL, RDFS, SHACL } from "./ontology";
+
+const { literal } = new DataFactory();
 
 export interface ShapeField {
   name: string;
@@ -66,22 +70,24 @@ const RDFListElement = pred(RDF.terms.first)
   .one()
   .and(pred(RDF.terms.rest).one());
 
-export const RdfList: BasicLens<Cont, Term[]> = new BasicLens((c) => {
-  if (c.id.equals(RDF.terms.nil)) {
-    return [];
-  }
+export const RdfList: BasicLens<Cont, Term[]> = new BasicLens(
+  (c, _, states) => {
+    if (c.id.equals(RDF.terms.nil)) {
+      return [];
+    }
 
-  const [first, rest] = RDFListElement.execute(c);
-  const els = RdfList.execute(rest);
-  els.unshift(first.id);
-  return els;
-});
+    const [first, rest] = RDFListElement.execute(c, states);
+    const els = RdfList.execute(rest, states);
+    els.unshift(first.id);
+    return els;
+  },
+);
 
 export const ShaclSequencePath: BasicLens<
   Cont,
   BasicLensM<Cont, Cont>
-> = new BasicLens((c) => {
-  const pathList = RdfList.execute(c);
+> = new BasicLens((c, _, states) => {
+  const pathList = RdfList.execute(c, states);
 
   if (pathList.length === 0) {
     return new BasicLensM((c) => [c]);
@@ -99,10 +105,13 @@ export const ShaclSequencePath: BasicLens<
 export const ShaclAlternativepath: BasicLens<
   Cont,
   BasicLensM<Cont, Cont>
-> = new BasicLens((c) => {
-  const options = pred(SHACL.alternativePath).one().then(RdfList).execute(c);
+> = new BasicLens((c, _, states) => {
+  const options = pred(SHACL.alternativePath)
+    .one()
+    .then(RdfList)
+    .execute(c, states);
   const optionLenses = options.map((id) =>
-    ShaclPath.execute({ id, quads: c.quads }),
+    ShaclPath.execute({ id, quads: c.quads }, states),
   );
   return optionLenses[0].orAll(...optionLenses.slice(1));
 });
@@ -119,8 +128,8 @@ export const ShaclInversePath: BasicLens<Cont, BasicLensM<Cont, Cont>> = pred(
 )
   .one()
   .then(
-    new BasicLens<Cont, BasicLensM<Cont, Cont>>((c) => {
-      const pathList = RdfList.execute(c);
+    new BasicLens<Cont, BasicLensM<Cont, Cont>>((c, _, states) => {
+      const pathList = RdfList.execute(c, states);
 
       if (pathList.length === 0) {
         return new BasicLensM((c) => [c]);
@@ -201,6 +210,42 @@ type SubClasses = {
   [clazz: string]: string;
 };
 
+function envLens(dataType: Term): BasicLens<Cont, any> {
+  const checkType = pred(RDF.terms.type)
+    .thenSome(
+      new BasicLens(({ id }) => {
+        if (!id.equals(RDFL.terms.EnvVariable)) {
+          throw "expected type " + RDFL.EnvVariable;
+        }
+        return { checked: true };
+      }),
+    )
+    .expectOne();
+
+  const envName = pred(RDFL.terms.envKey)
+    .one()
+    .map(({ id }) => ({
+      key: id.value,
+    }));
+
+  const defaultValue = pred(RDFL.terms.envDefault)
+    .one(undefined)
+    .map((found) => ({
+      defaultValue: found?.id.value,
+    }));
+
+  return checkType
+    .and(envName, defaultValue)
+    .map(([_, { key }, { defaultValue }]) => {
+      const value = process.env[key] || defaultValue;
+      if (value) {
+        return dataTypeToExtract(dataType, literal(value));
+      } else {
+        throw "Nothing set for ENV " + key + ". No default was set either!";
+      }
+    });
+}
+
 function extractProperty(
   cache: Cache,
   subClasses: SubClasses,
@@ -220,7 +265,9 @@ function extractProperty(
     pred(SHACL.datatype)
       .one()
       .map(({ id }) => ({
-        extract: empty<Cont>().map((item) => dataTypeToExtract(id, item.id)),
+        extract: envLens(id).or(
+          empty<Cont>().map((item) => dataTypeToExtract(id, item.id)),
+        ),
       }));
 
   const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> = field(
@@ -228,16 +275,16 @@ function extractProperty(
     "clazz",
   ).map(({ clazz: expected_class }) => {
     return {
-      extract: new BasicLens<Cont, any>(({ id, quads }) => {
+      extract: new BasicLens<Cont, any>(({ id, quads }, _, states) => {
         // We did not find a type, so use the expected class lens
         const lens = cache[expected_class];
         if (!lens) {
           throw `Tried extracting class ${expected_class} but no shape was defined`;
         }
         if (apply[expected_class]) {
-          return lens.map(apply[expected_class]).execute({ id, quads });
+          return lens.map(apply[expected_class]).execute({ id, quads }, states);
         } else {
-          return lens.execute({ id, quads });
+          return lens.execute({ id, quads }, states);
         }
       }),
     };
@@ -268,12 +315,59 @@ export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
   return out;
 });
 
+export const Cached = function (
+  lens: BasicLens<Cont, any>,
+  cachedLenses: {
+    lenses: { lens: BasicLens<Cont, any>; from: BasicLens<Cont, any> }[];
+  },
+): BasicLens<Cont, any> {
+  const lenses = cachedLenses["lenses"] ?? (cachedLenses.lenses = []);
+
+  const found = lenses.find((x) => x.from === lens);
+  if (found) {
+    return found.lens;
+  }
+
+  const newLens = new BasicLens<Cont, any>(({ id, quads }, _, states) => {
+    const state = states[lens.index] ?? (states[lens.index] = {});
+    let stateDict: {
+      [id: string]: { lens: BasicLens<Cont, any>; result: any }[];
+    } = {};
+    if (id.termType == "NamedNode") {
+      stateDict = state.namedNodes = state.namedNodes ?? {};
+    }
+    if (id.termType == "BlankNode") {
+      stateDict = state.blankNodes = state.blankNodes ?? {};
+    }
+
+    if (!(id.value in stateDict!)) {
+      stateDict[id.value] = [];
+    }
+
+    const res = stateDict![id.value].find((x) => x.lens == lens);
+    if (res) {
+      return res.result;
+    }
+
+    const thisThing = { lens: lens, result: {} };
+    stateDict[id.value].push(thisThing);
+
+    const executedLens = lens.execute({ quads, id }, states);
+    Object.assign(thisThing.result, executedLens);
+
+    return thisThing.result;
+  });
+
+  lenses.push({ lens: newLens, from: lens });
+  return newLens;
+};
+
 export const TypedExtract = function (
   cache: Cache,
   apply: ApplyDict,
   subClasses: SubClasses,
 ): BasicLens<Cont, any> {
-  return new BasicLens(({ id, quads }) => {
+  return new BasicLens(({ id, quads }, state, states) => {
     const ty = quads.find(
       (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
     )?.object.value;
@@ -287,9 +381,9 @@ export const TypedExtract = function (
 
     let current = ty;
     while (!!current) {
-      const lens = cache[current];
-      if (lens) {
-        lenses.push(lens);
+      const thisLens = cache[current];
+      if (thisLens) {
+        lenses.push(Cached(thisLens, state));
       }
       current = subClasses[current];
     }
@@ -309,9 +403,9 @@ export const TypedExtract = function (
             .map((xs) => Object.assign({}, ...xs));
 
     if (apply[ty]) {
-      return finalLens.map(apply[ty]).execute({ id, quads });
+      return finalLens.map(apply[ty]).execute({ id, quads }, states);
     } else {
-      return finalLens.execute({ id, quads });
+      return finalLens.execute({ id, quads }, states);
     }
   });
 };
@@ -379,7 +473,7 @@ export function extractShapes(
     .then(unique())
     .asMulti()
     .thenSome(extractShape(cache, subClasses, apply))
-    .execute(quads)
+    .execute(quads, [])
     .flat();
   const lenses = [];
 
