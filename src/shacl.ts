@@ -334,7 +334,6 @@ export const Cached = function (
 
   const found = lenses.find((x) => x.from === lens);
   if (found) {
-    console.log("Return lens found!");
     return found.lens;
   }
 
@@ -356,7 +355,6 @@ export const Cached = function (
 
     const res = stateDict![id.value].find((x) => x.lens == lens);
     if (res) {
-      console.log("Item already extracted, returning ti");
       return res.result;
     }
 
