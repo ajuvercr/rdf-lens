@@ -313,6 +313,46 @@ ${prefixes}
     expect(obj.y).toBe("y");
   });
 
+  test("Multiple with rdf List", () => {
+    const shapes = `
+${prefixes}
+[] a sh:NodeShape;
+  sh:targetClass js:Point;
+  sh:property [
+    sh:datatype xsd:string;
+    sh:path <string>;
+    sh:name "strings";
+  ], [
+    sh:class js:Point;
+    sh:path <point>;
+    sh:name "points";
+  ].
+`;
+    const data = `
+${prefixes}
+
+<abc> a js:Point;
+  <string> ( "1" "2" "3");
+  <point> (
+    [ a js:Point; <string> ( "4" "5"); ]
+    [ a js:Point; <string> "6"; ]
+).
+`;
+    const output = extractShapes(parseQuads(shapes));
+
+    const quads = parseQuads(data);
+    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+    const obj = output.lenses[quad.object.value].execute({
+      id: quad.subject,
+      quads,
+    });
+
+    expect(obj.strings).toEqual(["1", "2", "3"]);
+    expect(obj.points.flatMap((x: { strings: string[] }) => x.strings)).toEqual(
+      ["4", "5", "6"],
+    );
+  });
+
   describe("Testing custom RDFL lenses", () => {
     const shape = `
 ${prefixes}
@@ -376,10 +416,13 @@ ${prefixes}
 
     const quads = parseQuads(data);
     const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    const obj = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
-    }, []);
+    const obj = output.lenses[quad.object.value].execute(
+      {
+        id: quad.subject,
+        quads,
+      },
+      [],
+    );
 
     test("Shapes contain rdfl lenses", () => {
       const shapes = Object.keys(output.lenses);
