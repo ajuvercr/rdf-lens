@@ -26,6 +26,8 @@ export const SHACL = createTermNamespace(
   // Path things
   "alternativePath",
   "zeroOrMorePath",
+  "oneOrMorePath",
+  "zeroOrOnePath",
   "inversePath",
   "minCount",
   "maxCount",

@@ -443,6 +443,7 @@ ${prefixes}
     });
 
     test("Path applied to object works", () => {
+      console.log(Object.keys(obj))
       const result = obj.path.execute({ id: obj.id, quads: obj.context });
       expect(result[0].id.value).toEqual("Hello");
     });
