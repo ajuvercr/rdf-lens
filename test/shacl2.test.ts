@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, test } from "vitest";
 import { Quad } from "@rdfjs/types";
 import { RDF } from "@treecg/types";
 import { Parser } from "n3";
@@ -80,18 +80,18 @@ js:JsProcessorShape a sh:NodeShape;
 `;
 
 function parseQuads(inp: string): Quad[] {
-  return new Parser().parse(inp);
+    return new Parser().parse(inp);
 }
 
 describe("Shapes test", () => {
-  test("Parse shapes", () => {
-    const quads = parseQuads(shapes);
-    const output = extractShapes(quads);
-    expect(output.shapes.length).toBe(3);
-  });
+    test("Parse shapes", () => {
+        const quads = parseQuads(shapes);
+        const output = extractShapes(quads);
+        expect(output.shapes.length).toBe(3);
+    });
 
-  test("Parse objects", () => {
-    const data = `
+    test("Parse objects", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
@@ -104,25 +104,25 @@ ${prefixes}
   ].
 `;
 
-    const output = extractShapes(parseQuads(shapes));
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const output = extractShapes(parseQuads(shapes));
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-    const object = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
+        const object = output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
+        expect(object.required).toBe("true");
+        expect(object.multiple).toEqual(["one!"]);
+        expect(object.atLeast).toEqual(["two!"]);
+        expect(object.certainPoint.x).toBe(5);
+        expect(object.certainPoint.y).toBe(42);
+        expect(object.dataPoint.x).toBe(5);
+        expect(object.dataPoint.y).toBe(42);
     });
-    expect(object.required).toBe("true");
-    expect(object.multiple).toEqual(["one!"]);
-    expect(object.atLeast).toEqual(["two!"]);
-    expect(object.certainPoint.x).toBe(5);
-    expect(object.certainPoint.y).toBe(42);
-    expect(object.dataPoint.x).toBe(5);
-    expect(object.dataPoint.y).toBe(42);
-  });
 
-  test("Invalid objects", () => {
-    const data = `
+    test("Invalid objects", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   # :required "true";
@@ -134,21 +134,21 @@ ${prefixes}
     js:y 42;
   ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-    expect(() =>
-      output.lenses[quad.object.value].execute({
-        id: quad.subject,
-        quads,
-      }),
-    ).toThrow();
-  });
+        expect(() =>
+            output.lenses[quad.object.value].execute({
+                id: quad.subject,
+                quads,
+            }),
+        ).toThrow();
+    });
 
-  test("Parse subclassed objects", () => {
-    const data = `
+    test("Parse subclassed objects", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
@@ -161,23 +161,23 @@ ${prefixes}
     js:z 64;
   ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-    const object = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
+        const object = output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
+
+        expect(object.dataPoint.x).toBe(5);
+        expect(object.dataPoint.y).toBe(42);
+        expect(object.dataPoint.z).toBe(64);
     });
 
-    expect(object.dataPoint.x).toBe(5);
-    expect(object.dataPoint.y).toBe(42);
-    expect(object.dataPoint.z).toBe(64);
-  });
-
-  test("Parse objects without type", () => {
-    const data = `
+    test("Parse objects without type", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
@@ -188,22 +188,22 @@ ${prefixes}
     js:y 42;
   ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    const object = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const object = output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
+
+        expect(object.certainPoint.x).toBe(5);
+        expect(object.certainPoint.y).toBe(42);
+        expect(object.dataPoint).toBeUndefined();
     });
 
-    expect(object.certainPoint.x).toBe(5);
-    expect(object.certainPoint.y).toBe(42);
-    expect(object.dataPoint).toBeUndefined();
-  });
-
-  test("Parse fake subclassed objects fail", () => {
-    const data = `
+    test("Parse fake subclassed objects fail", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
@@ -220,21 +220,21 @@ ${prefixes}
     ];
   ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-    expect(() =>
-      output.lenses[quad.object.value].execute({
-        id: quad.subject,
-        quads,
-      }),
-    ).toThrow();
-  });
+        expect(() =>
+            output.lenses[quad.object.value].execute({
+                id: quad.subject,
+                quads,
+            }),
+        ).toThrow();
+    });
 
-  test("Empty list", () => {
-    const data = `
+    test("Empty list", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
@@ -244,19 +244,19 @@ ${prefixes}
     js:y 42;
   ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    const object = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const object = output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
+        expect(object.multiple).toEqual([]);
     });
-    expect(object.multiple).toEqual([]);
-  });
 
-  test("Empty list fails", () => {
-    const data = `
+    test("Empty list fails", () => {
+        const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
@@ -265,20 +265,20 @@ ${prefixes}
     js:y 42;
   ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    expect(() =>
-      output.lenses[quad.object.value].execute({
-        id: quad.subject,
-        quads,
-      }),
-    ).toThrow();
-  });
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        expect(() =>
+            output.lenses[quad.object.value].execute({
+                id: quad.subject,
+                quads,
+            }),
+        ).toThrow();
+    });
 
-  test("Inverse path", () => {
-    const shapes = `
+    test("Inverse path", () => {
+        const shapes = `
 ${prefixes}
 [] a sh:NodeShape;
   sh:targetClass js:Point;
@@ -294,27 +294,27 @@ ${prefixes}
     sh:maxCount 1;
   ].
 `;
-    const data = `
+        const data = `
 ${prefixes}
 <abc> a js:Point.
 
 <x> js:x <abc>.
 <y> js:x [ js:y <abc> ].
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    const obj = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const obj = output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
+        expect(obj.x).toBe("x");
+        expect(obj.y).toBe("y");
     });
-    expect(obj.x).toBe("x");
-    expect(obj.y).toBe("y");
-  });
 
-  test("Multiple with rdf List", () => {
-    const shapes = `
+    test("Multiple with rdf List", () => {
+        const shapes = `
 ${prefixes}
 [] a sh:NodeShape;
   sh:targetClass js:Point;
@@ -328,7 +328,7 @@ ${prefixes}
     sh:name "points";
   ].
 `;
-    const data = `
+        const data = `
 ${prefixes}
 
 <abc> a js:Point;
@@ -338,23 +338,23 @@ ${prefixes}
     [ a js:Point; <string> "6"; ]
 ).
 `;
-    const output = extractShapes(parseQuads(shapes));
+        const output = extractShapes(parseQuads(shapes));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    const obj = output.lenses[quad.object.value].execute({
-      id: quad.subject,
-      quads,
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const obj = output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
+
+        expect(obj.strings).toEqual(["1", "2", "3"]);
+        expect(
+            obj.points.flatMap((x: { strings: string[] }) => x.strings),
+        ).toEqual(["4", "5", "6"]);
     });
 
-    expect(obj.strings).toEqual(["1", "2", "3"]);
-    expect(obj.points.flatMap((x: { strings: string[] }) => x.strings)).toEqual(
-      ["4", "5", "6"],
-    );
-  });
-
-  describe("Testing custom RDFL lenses", () => {
-    const shape = `
+    describe("Testing custom RDFL lenses", () => {
+        const shape = `
 ${prefixes}
 
 [] a sh:NodeShape;
@@ -396,7 +396,7 @@ ${prefixes}
     sh:minCount 1;
 ].
 `;
-    const data = `
+        const data = `
 ${prefixes}
 <abc> a js:Point;
   <context> [ ];
@@ -412,48 +412,48 @@ ${prefixes}
   ].
 `;
 
-    const output = extractShapes(parseQuads(shape));
+        const output = extractShapes(parseQuads(shape));
 
-    const quads = parseQuads(data);
-    const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-    const obj = output.lenses[quad.object.value].execute(
-      {
-        id: quad.subject,
-        quads,
-      },
-      [],
-    );
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const obj = output.lenses[quad.object.value].execute(
+            {
+                id: quad.subject,
+                quads,
+            },
+            [],
+        );
 
-    test("Shapes contain rdfl lenses", () => {
-      const shapes = Object.keys(output.lenses);
-      expect(shapes).toContain(RDFL.Context);
-      expect(shapes).toContain(RDFL.CBD);
-      expect(shapes).toContain(RDFL.PathLens);
+        test("Shapes contain rdfl lenses", () => {
+            const shapes = Object.keys(output.lenses);
+            expect(shapes).toContain(RDFL.Context);
+            expect(shapes).toContain(RDFL.CBD);
+            expect(shapes).toContain(RDFL.PathLens);
+        });
+
+        test("Keys are present", () => {
+            const keys = Object.keys(obj);
+            expect(keys).toContain("path");
+            expect(keys).toContain("cbd");
+            expect(keys).toContain("context");
+        });
+
+        test("Context quads are found", () => {
+            expect(obj.context.length).toEqual(quads.length);
+        });
+
+        test("Path applied to object works", () => {
+            console.log(Object.keys(obj));
+            const result = obj.path.execute({ id: obj.id, quads: obj.context });
+            expect(result[0].id.value).toEqual("Hello");
+        });
+
+        test("CBD works", () => {
+            expect(obj.cbd.length).toBe(4);
+        });
+
+        test("Custom extract works", () => {
+            expect(obj.custom.value).toBe("VALUE");
+        });
     });
-
-    test("Keys are present", () => {
-      const keys = Object.keys(obj);
-      expect(keys).toContain("path");
-      expect(keys).toContain("cbd");
-      expect(keys).toContain("context");
-    });
-
-    test("Context quads are found", () => {
-      expect(obj.context.length).toEqual(quads.length);
-    });
-
-    test("Path applied to object works", () => {
-      console.log(Object.keys(obj))
-      const result = obj.path.execute({ id: obj.id, quads: obj.context });
-      expect(result[0].id.value).toEqual("Hello");
-    });
-
-    test("CBD works", () => {
-      expect(obj.cbd.length).toBe(4);
-    });
-
-    test("Custom extract works", () => {
-      expect(obj.custom.value).toBe("VALUE");
-    });
-  });
 });
