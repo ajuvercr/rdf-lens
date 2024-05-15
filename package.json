@@ -20,7 +20,7 @@
   "author": "Jens Pots",
   "license": "MIT",
   "devDependencies": {
-    "@ajuvercr/js-runner": "^0.1.17",
+    "@ajuvercr/js-runner": "^0.1.20",
     "@treecg/connector-types": "^1.2.1",
     "@typescript-eslint/eslint-plugin": "^7.5.0",
     "@typescript-eslint/parser": "^7.4.0",
