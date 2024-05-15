@@ -39,18 +39,51 @@ export function toLens(
   const fields = shape.fields.map((field) => {
     const minCount = field.minCount || 0;
     const maxCount = field.maxCount || Number.MAX_SAFE_INTEGER;
-    const base =
-      maxCount < 2 // There will be at most one
-        ? field.path.one().then(field.extract)
-        : field.path.thenAll(field.extract).map((xs) => {
-            if (xs.length < minCount) {
-              throw `${shape.ty}:${field.name} required at least ${minCount} elements, found ${xs.length}`;
+    const base = (() => {
+      if (maxCount < 2) {
+        return field.path.one().then(
+          new BasicLens((x, _, states) => {
+            if (x) {
+              return field.extract.execute(x, states);
+            } else {
+              if (minCount > 0) {
+                throw "Thing is undefined " + field.name;
+              } else {
+                return x;
+              }
             }
-            if (xs.length > maxCount) {
-              throw `${shape.ty}:${field.name} required at most ${maxCount} elements, found ${xs.length}`;
-            }
-            return xs;
-          });
+          }),
+        );
+      }
+
+      const thenListExtract = RdfList.and(empty<Cont>()).map(
+        ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
+      );
+      const noListExtract = empty<Cont>().map((x) => [x]);
+
+      return field.path
+        .thenFlat(thenListExtract.or(noListExtract).asMulti())
+        .thenAll(field.extract)
+        .map((x) => x.filter((x) => !!x))
+        .map((xs) => {
+          if (xs.length < minCount) {
+            throw `${shape.ty}:${field.name} required at least ${minCount} elements, found ${xs.length}`;
+          }
+          if (xs.length > maxCount) {
+            throw `${shape.ty}:${field.name} required at most ${maxCount} elements, found ${xs.length}`;
+          }
+          return xs;
+        })
+        .map((x) => {
+          const out = x.filter((x) => !!x);
+          if (maxCount < 2) {
+            // console.log(out, x);
+            return out[0];
+          } else {
+            return out;
+          }
+        });
+    })();
 
     const asField = base.map((x) => {
       const out = <{ [label: string]: any }>{};
@@ -67,8 +100,8 @@ export function toLens(
 }
 
 const RDFListElement = pred(RDF.terms.first)
-  .one()
-  .and(pred(RDF.terms.rest).one());
+  .expectOne()
+  .and(pred(RDF.terms.rest).expectOne());
 
 export const RdfList: BasicLens<Cont, Term[]> = new BasicLens(
   (c, _, states) => {
@@ -88,15 +121,18 @@ export const ShaclSequencePath: BasicLens<
   BasicLensM<Cont, Cont>
 > = new BasicLens((c, _, states) => {
   const pathList = RdfList.execute(c, states);
+  const paths = pathList.map((x) =>
+    ShaclPath.execute({ id: x, quads: c.quads }),
+  );
 
-  if (pathList.length === 0) {
+  if (paths.length === 0) {
     return new BasicLensM((c) => [c]);
   }
 
-  let start = pred(pathList[0]);
+  let start = paths[0];
 
   for (let i = 1; i < pathList.length; i++) {
-    start = start.thenFlat(pred(pathList[i]));
+    start = start.thenFlat(paths[i]);
   }
 
   return start;
@@ -151,9 +187,63 @@ export const ShaclInversePath: BasicLens<Cont, BasicLensM<Cont, Cont>> = pred(
     ),
   );
 
+export function MultiPath(
+  predicate: Term,
+  min: number,
+  max?: number,
+): BasicLens<Cont, BasicLensM<Cont, Cont>> {
+  return pred(predicate)
+    .one()
+    .then(
+      new BasicLens<Cont, BasicLensM<Cont, Cont>>((c, _, states) => {
+        return ShaclPath.execute(c, states);
+      }),
+    )
+    .map(
+      (x) =>
+        new BasicLensM<Cont, Cont>((c, _, states) => {
+          let out: Cont[] = [];
+          let current = [c];
+          let done = 0;
+
+          if (min == 0) {
+            out.push(c);
+          }
+
+          while (current.length > 0) {
+            done += 1;
+            const todo = current.slice();
+            current = [];
+            for (let c of todo) {
+              try {
+                const news = x.execute(c, states);
+                console.log("adding ", news.length, "news");
+                current.push(...news);
+
+                if (done >= min && (!max || done <= max)) {
+                  out.push(c);
+                }
+              } catch (ex) {
+                console.log(ex);
+                if (done >= min && (!max || done <= max)) {
+                  out.push(c);
+                }
+                break;
+              }
+            }
+          }
+
+          return out;
+        }),
+    );
+}
+
 export const ShaclPath = ShaclSequencePath.or(
   ShaclAlternativepath,
   ShaclInversePath,
+  MultiPath(SHACL.zeroOrMorePath, 0),
+  MultiPath(SHACL.zeroOrMorePath, 1),
+  MultiPath(SHACL.zeroOrOnePath, 0, 1),
   ShaclPredicatePath,
 );
 
@@ -303,12 +393,15 @@ export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
   while (item) {
     const found = quads.filter((x) => x.subject.equals(item));
     out.push(...found);
-    for (let option of found
-      .map((x) => x.object)
-      .filter((x) => x.termType === "BlankNode")) {
-      if (done.has(option.value)) continue;
-      done.add(option.value);
-      todo.push(option);
+    for (let option of found) {
+      const object = option.object;
+      if (object.termType !== "BlankNode") {
+        continue;
+      }
+
+      if (done.has(object.value)) continue;
+      done.add(object.value);
+      todo.push(object);
     }
     item = todo.pop();
   }
