@@ -12,7 +12,7 @@
   ],
   "description": "",
   "scripts": {
-    "build": "tsc && tsc-alias",
+    "build": "tsc && tsc-alias && rollup ./dist/index.js --file ./dist/index.cjs --format cjs",
     "test": "vitest run --coverage --coverage.include src",
     "prepare": "husky"
   },

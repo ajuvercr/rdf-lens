@@ -55,6 +55,7 @@ export function toLens(
                     }),
                 );
             }
+            if (maxCount < 2) return field.path.one().then(field.extract);
 
             const thenListExtract = RdfList.and(empty<Cont>()).map(
                 ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
@@ -394,7 +395,7 @@ function extractProperty(
 export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
     const done = new Set<string>();
     const todo = [id];
-    const out = [];
+    const out: Quad[] = [];
     let item = todo.pop();
     while (item) {
         const found = quads.filter((x) => x.subject.equals(item));

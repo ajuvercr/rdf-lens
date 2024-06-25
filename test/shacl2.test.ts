@@ -338,6 +338,7 @@ ${prefixes}
     [ a js:Point; <string> "6"; ]
 ).
 `;
+
         const output = extractShapes(parseQuads(shapes));
 
         const quads = parseQuads(data);
