@@ -12,8 +12,6 @@
     "preserveConstEnums": true,
     "downlevelIteration": true,
     "skipLibCheck": true,
-    "declaration": true,
-    "declarationMap": true,
     "strict": true,
     "strictFunctionTypes": false,
     "strictPropertyInitialization": false,
