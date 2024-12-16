@@ -11,7 +11,7 @@ import {
     unique,
 } from "./lens";
 
-import { DataFactory } from "rdf-data-factory";
+import { DataFactory, NamedNode } from "rdf-data-factory";
 import { RDFL, RDFS, SHACL } from "./ontology";
 
 const { literal } = new DataFactory();
@@ -156,9 +156,7 @@ export const ShaclAlternativepath: BasicLens<
 export const ShaclPredicatePath: BasicLens<
     Cont,
     BasicLensM<Cont, Cont>
-> = new BasicLens((c) => {
-    return pred(c.id);
-});
+> = extractLeaf(XSD.terms.custom("iri")).map(pred);
 
 export const ShaclInversePath: BasicLens<Cont, BasicLensM<Cont, Cont>> = pred(
     SHACL.inversePath,
@@ -289,6 +287,9 @@ function dataTypeToExtract(dataType: Term, t: Term): unknown {
     if (dataType.equals(XSD.terms.string)) return t.value;
     if (dataType.equals(XSD.terms.dateTime)) return new Date(t.value);
     if (dataType.equals(XSD.terms.custom("boolean"))) return t.value === "true";
+    if (dataType.equals(XSD.terms.custom("iri"))) return new NamedNode(t.value);
+    if (dataType.equals(XSD.terms.custom("anyURI")))
+        return new NamedNode(t.value);
 
     return t;
 }
@@ -341,6 +342,12 @@ function envLens(dataType: Term): BasicLens<Cont, unknown> {
         });
 }
 
+function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
+    return envLens(datatype).or(
+        empty<Cont>().map((item) => dataTypeToExtract(datatype, item.id)),
+    );
+}
+
 function extractProperty(
     cache: Cache,
     _subClasses: SubClasses,
@@ -360,9 +367,7 @@ function extractProperty(
         pred(SHACL.datatype)
             .one()
             .map(({ id }) => ({
-                extract: envLens(id).or(
-                    empty<Cont>().map((item) => dataTypeToExtract(id, item.id)),
-                ),
+                extract: extractLeaf(id),
             }));
 
     const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =

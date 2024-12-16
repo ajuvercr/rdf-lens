@@ -4,6 +4,7 @@ import { RDF } from "@treecg/types";
 import { Parser } from "n3";
 import { extractShapes } from "../src/shacl";
 import { RDFL } from "../src/ontology";
+import { BasicLensM, Cont } from "../src";
 
 const prefixes = `
 @prefix js: <https://w3id.org/conn/js#> .
@@ -455,6 +456,112 @@ ${prefixes}
 
         test("Custom extract works", () => {
             expect(obj.custom.value).toBe("VALUE");
+        });
+    });
+
+    describe("Extract path from env variable", () => {
+        const shape = `
+${prefixes}
+
+[] a sh:NodeShape;
+  sh:targetClass js:Point;
+  sh:property [
+    sh:datatype xsd:string;
+    sh:path <str>;
+    sh:name "str";
+    sh:maxCount 1;
+  ], [
+    sh:class rdfl:PathLens;
+    sh:path <path>;
+    sh:name "path";
+    sh:maxCount 1;
+  ], [
+    sh:class rdfl:PathLens;
+    sh:path <path2>;
+    sh:name "path2";
+    sh:maxCount 1;
+  ], [
+    sh:class rdfl:PathLens;
+    sh:path <complex>;
+    sh:name "complex";
+    sh:maxCount 1;
+  ].
+`;
+        const data = `
+${prefixes}
+<abc> a js:Point;
+  js:generatedAtTime 42;
+  <testpred> 43;
+  <entry> [
+    js:generatedAtTime 45;
+  ];
+  <str> [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "envworks"
+  ];
+  <path> [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "test"
+  ];
+  <path2> [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "notset"
+  ];
+  <complex> ([
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "test2"
+  ] 
+  [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "notset"
+  ]
+).
+`;
+
+        const output = extractShapes(parseQuads(shape));
+        const quads = parseQuads(data);
+
+        process.env["envworks"] = "true";
+        process.env["test"] = "testpred";
+        process.env["test2"] = "entry";
+
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+        const start = {
+            id: quad.subject,
+            quads,
+        };
+
+        const obj = <
+            {
+                str: string;
+                path: BasicLensM<Cont, Cont>;
+                path2: BasicLensM<Cont, Cont>;
+                complex: BasicLensM<Cont, Cont>;
+            }
+        >output.lenses[quad.object.value].execute(start, []);
+
+        test("From env variable that is set", () => {
+            const path1 = obj.path.execute(start).map((x) => x.id.value);
+            expect(path1).toEqual(["43"]);
+        });
+
+        test("From env variable that is not set", () => {
+            const path2 = obj.path2.execute(start).map((x) => x.id.value);
+            expect(path2).toEqual(["42"]);
+        });
+
+        test("Works in complex paths", () => {
+            const path2 = obj.complex.execute(start).map((x) => x.id.value);
+            expect(path2).toEqual(["45"]);
+        });
+
+        test("Check if process.env.VAR is the way", () => {
+            expect(obj.str).toBe("true");
         });
     });
 });
