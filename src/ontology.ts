@@ -42,4 +42,5 @@ export const RDFL = createUriAndTermNamespace(
     "EnvVariable",
     "envKey",
     "envDefault",
+    "datatype",
 );

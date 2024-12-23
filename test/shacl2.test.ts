@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { Quad } from "@rdfjs/types";
 import { RDF } from "@treecg/types";
 import { Parser } from "n3";
-import { extractShapes } from "../src/shacl";
+import { envReplace, extractShapes } from "../src/shacl";
 import { RDFL } from "../src/ontology";
 import { BasicLensM, Cont } from "../src";
 
@@ -562,6 +562,68 @@ ${prefixes}
 
         test("Check if process.env.VAR is the way", () => {
             expect(obj.str).toBe("true");
+        });
+    });
+
+    describe("Env replace works", () => {
+        const data = `
+${prefixes}
+<1> js:test [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "key1"
+  ].
+
+<2> js:test [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "key2";
+    rdfl:datatype xsd:iri
+  ].
+
+<3> js:test [
+    a rdfl:EnvVariable;
+    rdfl:envDefault js:generatedAtTime;
+    rdfl:envKey "notset";
+    rdfl:datatype xsd:iri
+  ].
+`;
+
+        const quads = parseQuads(data);
+        const l1 = quads.length;
+
+        process.env["key1"] = "true";
+        process.env["key2"] = "42";
+
+        const lens = envReplace();
+        const newQuads = lens.execute(quads);
+
+        test("Didn't change original quads", () => {
+            expect(quads.length).toBe(l1);
+        });
+
+        test("Did change new quads", () => {
+            expect(newQuads.length).toBe(3);
+        });
+
+        test("Datatype defaults to literal", () => {
+            const q1 = newQuads.find((x) => x.subject.value == "1")!;
+            expect(q1.object.termType).toBe("Literal");
+            expect(q1.object.value).toBe("true");
+        });
+
+        test("Datatype iri happens", () => {
+            const q1 = newQuads.find((x) => x.subject.value == "2")!;
+            expect(q1.object.termType).toBe("NamedNode");
+            expect(q1.object.value).toBe("42");
+        });
+
+        test("Default value works", () => {
+            const q1 = newQuads.find((x) => x.subject.value == "3")!;
+            expect(q1.object.termType).toBe("NamedNode");
+            expect(q1.object.value).toBe(
+                "https://w3id.org/conn/js#generatedAtTime",
+            );
         });
     });
 });

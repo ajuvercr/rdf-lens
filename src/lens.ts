@@ -159,6 +159,18 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
             return this.execute(c, states).filter(fn);
         });
     }
+
+    reduce<F>(
+        lens: BasicLens<[T, F], F>,
+        start: BasicLens<T[], F>,
+    ): BasicLens<C, F> {
+        return new BasicLens((c, _, states) => {
+            const st = this.then(empty<T[]>().and(start)).map(([ts, f]) => {
+                return ts.reduce((acc, v) => lens.execute([v, acc], states), f);
+            });
+            return st.execute(c, states);
+        });
+    }
 }
 
 export function pred(pred?: Term): BasicLensM<Cont, Cont> {
