@@ -67,7 +67,7 @@ export function toLens(
             return field.path
                 .thenFlat(thenListExtract.or(noListExtract).asMulti())
                 .thenAll(field.extract)
-                .map((x) => x.filter((x) => !!x))
+                .map((x) => x.filter((x) => x !== undefined))
                 .map((xs) => {
                     if (xs.length < minCount) {
                         throw `${shape.ty}:${field.name} required at least ${minCount} elements, found ${xs.length}`;
@@ -78,7 +78,7 @@ export function toLens(
                     return xs;
                 })
                 .map((x) => {
-                    const out = x.filter((x) => !!x);
+                    const out = x.filter((x) => x !== undefined);
                     if (maxCount < 2) {
                         return out[0];
                     } else {

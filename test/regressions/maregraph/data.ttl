@@ -1,0 +1,25 @@
+_:df_9_1 <https://w3id.org/sds#payload> <http://marineregions.org/mrgid/3959?t=1104534000> <https://w3id.org/sds#DataDescription> .
+_:df_9_1 <https://w3id.org/sds#stream> <http://example.org/ns#BenchmarkStream> <https://w3id.org/sds#DataDescription> .
+_:df_9_1 <https://w3id.org/sds#bucket> <> <https://w3id.org/sds#DataDescription> .
+<http://marineregions.org/mrgid/3959?t=1104534000> <http://purl.org/dc/terms/isVersionOf> <http://marineregions.org/mrgid/3959> .
+<http://marineregions.org/mrgid/3959?t=1104534000> <http://purl.org/dc/terms/modified> "2004-03-01T23:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://marineregions.org/ns/ontology#MRGeoObject> .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://marineregions.org/ns/placetypes#Canyons> .
+<http://marineregions.org/mrgid/3959> <http://marineregions.org/ns/ontology#isPartOf> <http://marineregions.org/mrgid/4279> .
+<http://marineregions.org/mrgid/3959> <http://purl.org/dc/terms/modified> "2004-03-01T23:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/2004/02/skos/core#exactMatch> <urn:acuf:ufi:45863> .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/2004/02/skos/core#note> ": Named after Skikda city"@en .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/2004/02/skos/core#note> ": Removed from GEBCO gazetteer 2010"@en .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/2004/02/skos/core#note> "Coordinates in ACUF: Latitude: 37.133333; Longitude: 6.783333"@en .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/2004/02/skos/core#prefLabel> "Skikda Canyons"@en .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/ns/dcat#centroid> "<http://www.opengis.net/def/crs/OGC/1.3/CRS84> POINT (6.78333333 37.13333333)"^^<http://www.opengis.net/ont/geosparql#wktLiteral> .
+<http://marineregions.org/mrgid/3959> <http://www.w3.org/ns/prov#hadPrimarySource> <http://www.ngdc.noaa.gov/gazetteer/> .
+<urn:acuf:ufi:45863> <https://schema.org/identifier> _:b5_n3-69958 .
+<urn:acuf:ufi:45863> <https://schema.org/url> <https://geonames.nga.mil/arcgis/rest/services/Research/GeoNames/MapServer/0/query?where=UNIQUE_FEATURE_IDENTIFIER_UFI%3D45863> .
+_:b5_n3-69958 <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://schema.org/PropertyValue> .
+_:b5_n3-69958 <https://schema.org/propertyID> <http://www.wikidata.org/entity/P2326> .
+_:b5_n3-69958 <https://schema.org/value> "45863" .
+<> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/sds#Bucket> <https://w3id.org/sds#DataDescription> .
+<> <https://w3id.org/sds#immutable> "false" <https://w3id.org/sds#DataDescription> .
+<> <https://w3id.org/sds#isRoot> "true" <https://w3id.org/sds#DataDescription> .
+<> <https://w3id.org/sds#stream> <http://example.org/ns#BenchmarkStream> <https://w3id.org/sds#DataDescription> .
