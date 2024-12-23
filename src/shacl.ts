@@ -1,12 +1,14 @@
-import { Quad, Term } from "@rdfjs/types";
-import { RDF, XSD } from "@treecg/types";
+import { Quad, Quad_Object, Term } from "@rdfjs/types";
+import { PROV, RDF, XSD } from "@treecg/types";
 import {
     BasicLens,
     BasicLensM,
     Cont,
     empty,
     invPred,
+    match,
     pred,
+    subject,
     subjects,
     unique,
 } from "./lens";
@@ -14,7 +16,7 @@ import {
 import { DataFactory, NamedNode } from "rdf-data-factory";
 import { RDFL, RDFS, SHACL } from "./ontology";
 
-const { literal } = new DataFactory();
+const { literal, quad } = new DataFactory();
 
 export interface ShapeField {
     name: string;
@@ -78,7 +80,6 @@ export function toLens(
                 .map((x) => {
                     const out = x.filter((x) => !!x);
                     if (maxCount < 2) {
-                        // console.log(out, x);
                         return out[0];
                     } else {
                         return out;
@@ -288,8 +289,9 @@ function dataTypeToExtract(dataType: Term, t: Term): unknown {
     if (dataType.equals(XSD.terms.dateTime)) return new Date(t.value);
     if (dataType.equals(XSD.terms.custom("boolean"))) return t.value === "true";
     if (dataType.equals(XSD.terms.custom("iri"))) return new NamedNode(t.value);
-    if (dataType.equals(XSD.terms.custom("anyURI")))
+    if (dataType.equals(XSD.terms.custom("anyURI"))) {
         return new NamedNode(t.value);
+    }
 
     return t;
 }
@@ -302,7 +304,7 @@ type SubClasses = {
     [clazz: string]: string;
 };
 
-function envLens(dataType: Term): BasicLens<Cont, unknown> {
+function envLens(dataType?: Term): BasicLens<Cont, unknown> {
     const checkType = pred(RDF.terms.type)
         .thenSome(
             new BasicLens(({ id }) => {
@@ -326,12 +328,18 @@ function envLens(dataType: Term): BasicLens<Cont, unknown> {
             defaultValue: found?.id.value,
         }));
 
+    const envDatatype = pred(RDFL.terms.datatype)
+        .one(undefined)
+        .map((found) => ({ dt: found?.id }));
+
     return checkType
-        .and(envName, defaultValue)
-        .map(([_thing, { key }, { defaultValue }]) => {
+        .and(envName, defaultValue, envDatatype)
+        .map(([_thing, { key }, { defaultValue }, { dt }]) => {
             const value = process.env[key] || defaultValue;
+            const thisDt = dataType || dt || XSD.terms.custom("literal");
+
             if (value) {
-                return dataTypeToExtract(dataType, literal(value));
+                return dataTypeToExtract(thisDt, literal(value));
             } else {
                 throw (
                     "Nothing set for ENV " +
@@ -340,6 +348,72 @@ function envLens(dataType: Term): BasicLens<Cont, unknown> {
                 );
             }
         });
+}
+
+export function sliced<T>(): BasicLens<T[], T[]> {
+    return new BasicLens((x) => x.slice());
+}
+
+function remove_cbd(quads: Quad[], subject: Term) {
+    const toRemoves = [subject];
+    while (toRemoves.length > 0) {
+        const toRemove = toRemoves.pop();
+
+        quads = quads.filter((q) => {
+            if (q.subject.equals(toRemove)) {
+                if (q.object.termType === "BlankNode") {
+                    toRemoves.push(q.object);
+                }
+                return false;
+            } else {
+                return true;
+            }
+        });
+    }
+    return quads;
+}
+
+export function envReplace(): BasicLens<Quad[], Quad[]> {
+    const shouldReplace = empty<[Cont, Quad[]]>()
+        .map((x) => x[0])
+        .then(envLens().and(empty<Cont>().map((x) => x.id)))
+        .map(([value, id]) => ({
+            value,
+            id,
+        }));
+
+    const reduce: BasicLens<[Cont, Quad[]], Quad[]> = shouldReplace
+        .and(empty<[Cont, Quad[]]>().map((x) => x[1]))
+        .map(([{ value, id }, quads]) => {
+            return remove_cbd(
+                quads.map((q) => {
+                    if (q.object.equals(id)) {
+                        return quad(
+                            q.subject,
+                            q.predicate,
+                            <Quad_Object>value,
+                            q.graph,
+                        );
+                    } else {
+                        return q;
+                    }
+                }),
+                id,
+            );
+        });
+
+    const actualReplace = match(
+        undefined,
+        RDF.terms.type,
+        RDFL.terms.EnvVariable,
+    )
+        .thenAll(subject)
+        .reduce(
+            reduce,
+            empty<Cont[]>().map((x) => x[0].quads),
+        );
+
+    return sliced().then(actualReplace);
 }
 
 function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
