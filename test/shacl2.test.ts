@@ -568,11 +568,12 @@ ${prefixes}
     describe("Env replace works", () => {
         const data = `
 ${prefixes}
+<a> <b> <c>.
 <1> js:test [
     a rdfl:EnvVariable;
     rdfl:envDefault js:generatedAtTime;
     rdfl:envKey "key1"
-  ].
+  ], <c>.
 
 <2> js:test [
     a rdfl:EnvVariable;
@@ -603,7 +604,7 @@ ${prefixes}
         });
 
         test("Did change new quads", () => {
-            expect(newQuads.length).toBe(3);
+            expect(newQuads.length).toBe(5);
         });
 
         test("Datatype defaults to literal", () => {
@@ -624,6 +625,11 @@ ${prefixes}
             expect(q1.object.value).toBe(
                 "https://w3id.org/conn/js#generatedAtTime",
             );
+        });
+
+        test("Doesnt fail when no env to replace", () => {
+            const newNewQuads = envReplace().execute(newQuads);
+            expect(newNewQuads.length).toBe(newQuads.length);
         });
     });
 });
