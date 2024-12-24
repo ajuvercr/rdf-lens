@@ -408,10 +408,7 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
         RDFL.terms.EnvVariable,
     )
         .thenAll(subject)
-        .reduce(
-            reduce,
-            empty<Cont[]>().map((x) => x[0].quads),
-        );
+        .reduce(reduce, empty<Quad[]>());
 
     return sliced().then(actualReplace);
 }

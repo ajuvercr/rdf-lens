@@ -162,12 +162,13 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
 
     reduce<F>(
         lens: BasicLens<[T, F], F>,
-        start: BasicLens<T[], F>,
+        start: BasicLens<C, F>,
     ): BasicLens<C, F> {
         return new BasicLens((c, _, states) => {
-            const st = this.then(empty<T[]>().and(start)).map(([ts, f]) => {
+            const st = this.and(start).map(([ts, f]) => {
                 return ts.reduce((acc, v) => lens.execute([v, acc], states), f);
             });
+
             return st.execute(c, states);
         });
     }
