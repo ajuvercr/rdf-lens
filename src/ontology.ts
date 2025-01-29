@@ -1,9 +1,14 @@
-import { createTermNamespace, createUriAndTermNamespace } from "@treecg/types";
+import {
+    createTermNamespace,
+    createUriAndTermNamespace,
+    Namespace,
+} from "@treecg/types";
+import { NamedNode } from "@rdfjs/types";
 
 export const RDFS = createTermNamespace(
     "http://www.w3.org/2000/01/rdf-schema#",
     "subClassOf",
-);
+) as Namespace<string[], NamedNode, string>;
 
 export const SHACL = createTermNamespace(
     "http://www.w3.org/ns/shacl#",
@@ -32,7 +37,8 @@ export const SHACL = createTermNamespace(
     "minCount",
     "maxCount",
     "datatype",
-);
+) as Namespace<string[], NamedNode, string>;
+
 export const RDFL = createUriAndTermNamespace(
     "https://w3id.org/rdf-lens/ontology#",
     "CBD",
@@ -43,4 +49,6 @@ export const RDFL = createUriAndTermNamespace(
     "envKey",
     "envDefault",
     "datatype",
-);
+) as Namespace<string[], string, string> & {
+    terms: Namespace<string[], NamedNode, string>;
+};

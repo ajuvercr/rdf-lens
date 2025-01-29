@@ -20,5 +20,6 @@
         "quotes": ["error", "double"],
         "semi": ["error", "always"],
         "@typescript-eslint/no-unused-vars": "warn"
-    }
+    },
+    "ignorePatterns": ["lib", "node_modules"]
 }
