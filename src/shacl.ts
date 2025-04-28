@@ -20,6 +20,9 @@ import { RDFL, RDFS, SHACL } from "./ontology";
 
 const { literal, quad } = new DataFactory();
 
+/**
+ * ShapeField describes a field/property in a SHACL shape, including its name, path, cardinality, and extraction lens
+ */
 export interface ShapeField {
     name: string;
     path: BasicLensM<Cont, Cont>;
@@ -28,6 +31,9 @@ export interface ShapeField {
     extract: BasicLens<Cont, unknown>;
 }
 
+/**
+ * Shape represents a SHACL node shape, including its identifier, type, description, and fields
+ */
 export interface Shape {
     id: string;
     ty: Term;
@@ -35,6 +41,11 @@ export interface Shape {
     fields: ShapeField[];
 }
 
+/**
+ * Converts a Shape definition into a BasicLens that extracts data objects matching the shape.
+ * Handles field cardinality (minCount/maxCount), list extraction, and field mapping.
+ * Throws if required fields are missing or cardinality is violated.
+ */
 export function toLens(
     shape: Shape,
 ): BasicLens<Cont, { [label: string]: unknown }> {
@@ -103,10 +114,17 @@ export function toLens(
         .map((xs) => Object.assign({}, ...xs));
 }
 
+/**
+ * RDFListElement extracts the 'first' and 'rest' links from an RDF collection (list)
+ */
 const RDFListElement = pred(RDF.terms.first)
     .expectOne()
     .and(pred(RDF.terms.rest).expectOne());
 
+/**
+ * RdfList extracts an array of Terms from an RDF collection (rdf:List), recursively traversing 'rest'.
+ * Returns an empty array for rdf:nil (the end of the list).
+ */
 export const RdfList: BasicLens<Cont, Term[]> = new BasicLens((c, ctx) => {
     if (c.id.equals(RDF.terms.nil)) {
         return [];
@@ -118,6 +136,10 @@ export const RdfList: BasicLens<Cont, Term[]> = new BasicLens((c, ctx) => {
     return els;
 });
 
+/**
+ * ShaclSequencePath interprets a SHACL sequence path (sh:sequencePath), chaining lenses for each step in the sequence.
+ * Returns a composed lens that follows the full sequence.
+ */
 export const ShaclSequencePath: BasicLens<
     Cont,
     BasicLensM<Cont, Cont>
@@ -140,6 +162,10 @@ export const ShaclSequencePath: BasicLens<
     return start;
 });
 
+/**
+ * ShaclAlternativepath interprets a SHACL alternative path (sh:alternativePath), creating a lens that matches any of the options.
+ * Returns a lens that tries all options and returns the result of the first that matches.
+ */
 export const ShaclAlternativepath: BasicLens<
     Cont,
     BasicLensM<Cont, Cont>
@@ -154,11 +180,18 @@ export const ShaclAlternativepath: BasicLens<
     return optionLenses[0].orAll(...optionLenses.slice(1));
 });
 
+/**
+ * ShaclPredicatePath extracts a simple predicate path (an IRI), mapping it to a lens that follows that predicate.
+ */
 export const ShaclPredicatePath: BasicLens<
     Cont,
     BasicLensM<Cont, Cont>
 > = extractLeaf(XSD.terms.custom("iri")).map(pred);
 
+/**
+ * ShaclInversePath interprets a SHACL inverse path (sh:inversePath), reversing the direction of a path or sequence of paths.
+ * Returns a lens that follows the inverse of the given path(s).
+ */
 export const ShaclInversePath: BasicLens<Cont, BasicLensM<Cont, Cont>> = pred(
     SHACL.inversePath,
 )
@@ -187,6 +220,10 @@ export const ShaclInversePath: BasicLens<Cont, BasicLensM<Cont, Cont>> = pred(
         ),
     );
 
+/**
+ * MultiPath creates a lens for SHACL multi-paths (e.g., zeroOrMorePath, zeroOrOnePath), following a path zero or more times as specified.
+ * Handles minimum/maximum path repetitions and returns all reachable nodes.
+ */
 export function MultiPath(
     predicate: Term,
     min: number,
@@ -238,6 +275,10 @@ export function MultiPath(
         );
 }
 
+/**
+ * ShaclPath is a union of all SHACL path types (sequence, alternative, inverse, multi, and predicate paths).
+ * It tries each path type in order and returns the result for the first matching type.
+ */
 export const ShaclPath = ShaclSequencePath.or(
     ShaclAlternativepath,
     ShaclInversePath,
@@ -247,6 +288,9 @@ export const ShaclPath = ShaclSequencePath.or(
     ShaclPredicatePath,
 );
 
+/**
+ * field creates a lens that extracts a single property value from a node, converting it if needed, and maps it to a named object property.
+ */
 function field<T extends string, O = string>(
     predicate: Term,
     name: T,
@@ -263,6 +307,9 @@ function field<T extends string, O = string>(
         });
 }
 
+/**
+ * optionalField creates a lens that extracts an optional property value from a node, converting it if present, and maps it to a named object property (or undefined).
+ */
 function optionalField<T extends string, O = string>(
     predicate: Term,
     name: T,
@@ -280,6 +327,10 @@ function optionalField<T extends string, O = string>(
             return out;
         });
 }
+
+/**
+ * dataTypeToExtract converts a Term value to a native JS value based on the given XSD datatype (e.g., integer, float, boolean, dateTime, IRI).
+ */
 function dataTypeToExtract(dataType: Term, t: Term): unknown {
     if (dataType.equals(XSD.terms.integer)) return +t.value;
     if (dataType.equals(XSD.terms.custom("float"))) return +t.value;
@@ -296,14 +347,24 @@ function dataTypeToExtract(dataType: Term, t: Term): unknown {
     return t;
 }
 
+/**
+ * Cache is a mapping of class IRIs to their extraction lenses
+ */
 type Cache = {
     [clazz: string]: BasicLens<Cont, unknown>;
 };
 
+/**
+ * SubClasses is a mapping of class IRIs to their parent class IRIs (for subclass hierarchy traversal)
+ */
 type SubClasses = {
     [clazz: string]: string;
 };
 
+/**
+ * envLens extracts environment variables from RDF nodes of type EnvVariable, with optional default and datatype conversion.
+ * Throws if variable is missing and no default is set.
+ */
 function envLens(dataType?: Term): BasicLens<Cont, unknown> {
     const checkType = pred(RDF.terms.type)
         .thenSome(
@@ -350,10 +411,17 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
         });
 }
 
+/**
+ * sliced returns a shallow copy of an array (utility lens for array manipulation).
+ */
 export function sliced<T>(): BasicLens<T[], T[]> {
     return new BasicLens((x) => x.slice());
 }
 
+/**
+ * remove_cbd removes all quads in the Concise Bounded Description (CBD) of a subject from the quad array.
+ * Traverses blank nodes recursively.
+ */
 function remove_cbd(quads: Quad[], subject: Term) {
     const toRemoves = [subject];
     while (toRemoves.length > 0) {
@@ -373,6 +441,10 @@ function remove_cbd(quads: Quad[], subject: Term) {
     return quads;
 }
 
+/**
+ * envReplace replaces references to EnvVariables in quads with their resolved values, using remove_cbd to remove original references.
+ * Returns a new quad array with replacements.
+ */
 export function envReplace(): BasicLens<Quad[], Quad[]> {
     const shouldReplace = empty<[Cont, Quad[]]>()
         .map((x) => x[0])
@@ -413,12 +485,19 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
     return sliced().then(actualReplace);
 }
 
+/**
+ * extractLeaf creates a lens that extracts a leaf value from a node, using envLens if available, otherwise converting by datatype.
+ */
 function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
     return envLens(datatype).or(
         empty<Cont>().map((item) => dataTypeToExtract(datatype, item.id)),
     );
 }
 
+/**
+ * extractProperty extracts a ShapeField from a SHACL property definition, handling path, name, min/max count, datatype/class, and extraction lens.
+ * Throws if a required class extraction lens is missing.
+ */
 function extractProperty(
     cache: Cache,
     _subClasses: SubClasses,
@@ -466,6 +545,9 @@ function extractProperty(
         .map((xs) => Object.assign({}, ...xs));
 }
 
+/**
+ * CBDLens extracts the Concise Bounded Description (CBD) for a subject from a set of quads, traversing blank nodes recursively.
+ */
 export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
     const done = new Set<string>();
     const todo = [id];
@@ -489,9 +571,16 @@ export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
     return out;
 });
 
+/**
+ * StateDict is used for caching lens execution results by node id and lens
+ */
 type StateDict = {
     [id: string]: { lens: BasicLens<Cont, unknown>; result: unknown }[];
 };
+
+/**
+ * CachedLens stores cached lens instances and their originating lenses
+ */
 type CachedLens = {
     lenses: {
         lens: BasicLens<Cont, unknown>;
@@ -499,6 +588,9 @@ type CachedLens = {
     }[];
 };
 
+/**
+ * getCacheState retrieves or initializes a cache state object for a lens in a given context.
+ */
 function getCacheState<I, O, T>(
     le: BasicLens<I, O>,
     ctx: LensContext,
@@ -512,6 +604,10 @@ function getCacheState<I, O, T>(
     return o;
 }
 
+/**
+ * Cached wraps a lens with caching logic, so repeated executions on the same node return cached results.
+ * Useful for handling cycles and repeated references in RDF graphs.
+ */
 export const Cached = function (
     lens: BasicLens<Cont, unknown>,
     cachedLenses: CachedLens,
@@ -559,6 +655,10 @@ export const Cached = function (
     return newLens;
 };
 
+/**
+ * TypedExtract creates a lens that extracts data based on the rdf:type of a node, traversing subclass hierarchies and applying type-specific extraction lenses.
+ * Throws if no extraction lens is found for a type.
+ */
 export const TypedExtract = function (
     cache: Cache,
     apply: ApplyDict,
@@ -614,7 +714,15 @@ export const TypedExtract = function (
     return lens;
 };
 
+/**
+ * ApplyDict is a mapping of type IRIs to post-processing functions applied after extraction
+ */
 export type ApplyDict = { [label: string]: (item: unknown) => unknown };
+
+/**
+ * extractShape extracts an array of Shape objects from RDF quads, using the provided cache, subclass mapping, and apply functions.
+ * Handles targetClass, description, and property extraction for each shape.
+ */
 export function extractShape(
     cache: Cache,
     subclasses: { [label: string]: string },
@@ -650,6 +758,9 @@ export function extractShape(
         );
 }
 
+/**
+ * Shapes bundles the extracted shapes, their lenses, and subclass hierarchy for downstream use.
+ */
 export type Shapes = {
     shapes: Shape[];
     lenses: Cache;
@@ -657,9 +768,10 @@ export type Shapes = {
 };
 
 /**
- * @param quads that should be used to extarct shapes from
- * @param [apply={}] optional apply functions that after extraction are applied to the parsed objects
- * @param [customClasses={}] lenses that are used to extract special objects types
+ * extractShapes is the main entry point for extracting SHACL shapes from RDF quads.
+ * Builds the lens cache, subclass hierarchy, and extracts all shapes.
+ * Optionally applies custom extraction logic for specific types.
+ * Returns a Shapes object with all extracted shapes and supporting data.
  */
 export function extractShapes(
     quads: Quad[],

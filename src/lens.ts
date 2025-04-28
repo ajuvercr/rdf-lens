@@ -5,8 +5,6 @@ import type { Quad, Term } from "@rdfjs/types";
  */
 export type Cont<Q = Term> = { id: Q; quads: Quad[] };
 
-let lensIndex = 0;
-
 /**
  * Per-run context for tracking lens state
  */
@@ -41,8 +39,6 @@ export class BasicLens<C, T> {
      */
     constructor(execute: (container: C, ctx: LensContext) => T) {
         this._exec = execute;
-        this.index = lensIndex;
-        lensIndex += 1;
     }
 
     /**
