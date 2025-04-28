@@ -1,48 +1,91 @@
 import type { Quad, Term } from "@rdfjs/types";
 
+/**
+ * Type alias for a container with an ID and quads.
+ */
 export type Cont<Q = Term> = { id: Q; quads: Quad[] };
-export type Res<T> = [Term, T];
 
 let lensIndex = 0;
 
+/**
+ * Per-run context for tracking lens state
+ */
+export interface LensContext {
+    stateMap: Map<BasicLens<unknown, unknown>, unknown>;
+}
+
+/**
+ * Create a fresh context for a lens execution run
+ */
+export function createContext(): LensContext {
+    return { stateMap: new Map() };
+}
+
+/**
+ * Basic lens class for handling data transformations.
+ */
 export class BasicLens<C, T> {
-    _exec: (container: C, state: unknown, states: unknown[]) => T;
+    /**
+     * Internal execution function for the lens.
+     */
+    _exec: (container: C, ctx: LensContext) => T;
+
+    /**
+     * Unique index for the lens.
+     */
     index: number;
-    constructor(
-        execute: (container: C, state: unknown, states: unknown[]) => T,
-    ) {
+
+    /**
+     * Creates a new BasicLens instance.
+     * @param execute - Execution function for the lens.
+     */
+    constructor(execute: (container: C, ctx: LensContext) => T) {
         this._exec = execute;
         this.index = lensIndex;
         lensIndex += 1;
     }
 
+    /**
+     * Converts a lens returning an array into a multi-valued lens.
+     * @returns Multi-valued lens for handling multiple results.
+     */
     asMulti(): T extends unknown[] ? BasicLensM<C, T[number]> : never {
         return <T extends unknown[] ? BasicLensM<C, T[number]> : never>(
-            new BasicLensM((c, _, states) => {
-                const out = this.execute(c, states);
+            new BasicLensM((c, ctx) => {
+                const out = this.execute(c, ctx);
                 return <T extends unknown[] ? unknown[] : never>out;
             })
         );
     }
 
+    /**
+     * Combines this lens with other lenses, returning a tuple of their results.
+     * @param and - Additional lenses to combine with this one.
+     * @returns A lens producing [thisResult, ...otherResults].
+     */
     and<F extends unknown[]>(
         ...and: { [K in keyof F]: BasicLens<C, F[K]> }
     ): BasicLens<C, [T, ...{ [K in keyof F]: F[K] }]> {
         return <BasicLens<C, [T, ...{ [K in keyof F]: F[K] }]>>(
-            new BasicLens((c, _, states) => {
-                const a = this.execute(c, states);
-                const rest: unknown[] = and.map((x) => x.execute(c, states));
+            new BasicLens((c, ctx) => {
+                const a = this.execute(c, ctx);
+                const rest: unknown[] = and.map((x) => x.execute(c, ctx));
                 return [a, ...rest];
             })
         );
     }
 
+    /**
+     * Aggregates results from this and other lenses, ignoring failures.
+     * @param others - Other lenses whose results are collected.
+     * @returns A multi-valued lens with all successful results.
+     */
     orM(...others: BasicLens<C, T>[]): BasicLensM<C, T> {
-        return new BasicLensM((c, _, states) => {
+        return new BasicLensM((c, ctx) => {
             const all = [this, ...others];
             return all.flatMap((x) => {
                 try {
-                    return [x.execute(c, states)];
+                    return [x.execute(c, ctx)];
                 } catch (ex: unknown) {
                     return [];
                 }
@@ -50,15 +93,20 @@ export class BasicLens<C, T> {
         });
     }
 
+    /**
+     * Returns the first successful result from this or fallback lenses.
+     * @param others - Fallback lenses to attempt on failure.
+     * @returns A lens that returns the first successful output or throws.
+     */
     or(...others: BasicLens<C, T>[]): BasicLens<C, T> {
-        return new BasicLens((c, _, states) => {
+        return new BasicLens((c, ctx) => {
             try {
-                return this.execute(c, states);
+                return this.execute(c, ctx);
             } catch (ex: unknown) {
                 for (let i = 0; i < others.length; i++) {
                     try {
-                        return others[i].execute(c, states);
-                    } catch (ex) {
+                        return others[i].execute(c, ctx);
+                    } catch (ex: unknown) {
                         // this can be ignored
                     }
                 }
@@ -67,49 +115,81 @@ export class BasicLens<C, T> {
         });
     }
 
+    /**
+     * Transforms the result of this lens with a mapping function.
+     * @param fn - Function applied to the lens result.
+     * @returns A lens producing the transformed result.
+     */
     map<F>(fn: (t: T) => F): BasicLens<C, F> {
-        return new BasicLens((c, _, states) => {
-            const a = this.execute(c, states);
+        return new BasicLens((c, ctx) => {
+            const a = this.execute(c, ctx);
             return fn(a);
         });
     }
 
+    /**
+     * Chains this lens with another lens.
+     * @param next - Next lens to apply to this lens's result.
+     * @returns A composed lens representing the sequential operation.
+     */
     then<F>(next: BasicLens<T, F>): BasicLens<C, F> {
-        return new BasicLens((c, _, states) => {
-            const a = this.execute(c, states);
-            return next.execute(a, states);
+        return new BasicLens((c, ctx) => {
+            const a = this.execute(c, ctx);
+            return next.execute(a, ctx);
         });
     }
 
-    execute(container: C, states: unknown[] = []): T {
-        if (!states[this.index]) {
-            states[this.index] = {};
-        }
-        return this._exec(container, states[this.index], states);
+    /**
+     * Execute the lens using a per-run context.
+     * @param container - Input container for the lens
+     * @param ctx - Optional context; a new one is created if not provided
+     * @returns Result of applying the lens
+     */
+    execute(container: C, ctx: LensContext = createContext()): T {
+        return this._exec(container, ctx);
     }
 }
 
+/**
+ * Multi-valued lens class for handling arrays of data.
+ */
 export class BasicLensM<C, T> extends BasicLens<C, T[]> {
+    /**
+     * Returns the first element of the result array or a default value.
+     * @param def - Default value if no result exists.
+     * @returns A lens producing the first element or default.
+     */
     one<D = T>(def?: D): BasicLens<C, T | D> {
-        return new BasicLens((c, _, states) => {
-            const qs = this.execute(c, states);
+        return new BasicLens((c, ctx) => {
+            const qs = this.execute(c, ctx);
             return qs[0] || def!;
         });
     }
+
+    /**
+     * Returns the first element of the result array or throws if empty.
+     * @returns A lens producing a single element.
+     * @throws Error if the result array is empty.
+     */
     expectOne(): BasicLens<C, T> {
-        return new BasicLens((c, _, states) => {
-            const qs = this.execute(c, states);
+        return new BasicLens((c, ctx) => {
+            const qs = this.execute(c, ctx);
             if (qs.length < 1) throw "Nope";
             return qs[0];
         });
     }
 
+    /**
+     * Applies a lens to each element and collects successful results.
+     * @param next - Lens to apply to each element.
+     * @returns A multi-valued lens of transformed elements.
+     */
     thenAll<F>(next: BasicLens<T, F>): BasicLensM<C, F> {
-        return new BasicLensM((c, _, states) => {
-            const qs = this.execute(c, states);
+        return new BasicLensM((c, ctx) => {
+            const qs = this.execute(c, ctx);
             return qs.flatMap((x) => {
                 try {
-                    const o = next.execute(x, states);
+                    const o = next.execute(x, ctx);
                     return [o];
                 } catch (ex: unknown) {
                     return [];
@@ -117,34 +197,54 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
             });
         });
     }
+
+    /**
+     * Alias for thenAll.
+     */
     thenSome<F>(next: BasicLens<T, F>): BasicLensM<C, F> {
         return this.thenAll(next);
     }
 
+    /**
+     * Applies a multi-valued lens to each element and flattens the results.
+     * @param next - Multi-valued lens to apply.
+     * @returns A multi-valued lens of flattened results.
+     */
     thenFlat<F>(next: BasicLensM<T, F>): BasicLensM<C, F> {
-        return new BasicLensM((c, _, states) => {
-            const qs = this.execute(c, states);
-            return qs.flatMap((x) => next.execute(x, states));
+        return new BasicLensM((c, ctx) => {
+            const qs = this.execute(c, ctx);
+            return qs.flatMap((x) => next.execute(x, ctx));
         });
     }
+
+    /**
+     * Maps a function over all elements in the result array.
+     * @param fn - Function to transform each element.
+     * @returns A multi-valued lens of transformed elements.
+     */
     mapAll<F>(fn: (t: T) => F): BasicLensM<C, F> {
-        return new BasicLensM((c, _, states) => {
-            const qs = this.execute(c, states);
+        return new BasicLensM((c, ctx) => {
+            const qs = this.execute(c, ctx);
             return qs.map(fn);
         });
     }
 
+    /**
+     * Combines results from this multi-lens with other multi-lenses.
+     * @param others - Additional multi-valued lenses to combine.
+     * @returns A multi-valued lens of concatenated results.
+     */
     orAll(...others: BasicLensM<C, T>[]): BasicLensM<C, T> {
-        return new BasicLensM((c, _, states) => {
+        return new BasicLensM((c, ctx) => {
             const out = [];
             try {
-                out.push(...this.execute(c, states));
+                out.push(...this.execute(c, ctx));
             } catch (ex: unknown) {
                 // this can be ignored
             }
             for (let i = 0; i < others.length; i++) {
                 try {
-                    out.push(...others[i].execute(c, states));
+                    out.push(...others[i].execute(c, ctx));
                 } catch (ex: unknown) {
                     // this can be ignored
                 }
@@ -154,26 +254,42 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
         });
     }
 
+    /**
+     * Filters the result array based on a predicate.
+     * @param fn - Predicate function to test elements.
+     * @returns A multi-valued lens of filtered elements.
+     */
     filter(fn: (object: T) => boolean): BasicLensM<C, T> {
-        return new BasicLensM((c, _, states) => {
-            return this.execute(c, states).filter(fn);
+        return new BasicLensM((c, ctx) => {
+            return this.execute(c, ctx).filter(fn);
         });
     }
 
+    /**
+     * Reduces the result array using an accumulator lens.
+     * @param lens - Lens applied at each reduction step.
+     * @param start - Initial accumulator lens.
+     * @returns A composed lens producing the final accumulated value.
+     */
     reduce<F>(
         lens: BasicLens<[T, F], F>,
         start: BasicLens<C, F>,
     ): BasicLens<C, F> {
-        return new BasicLens((c, _, states) => {
+        return new BasicLens((c, ctx) => {
             const st = this.and(start).map(([ts, f]) => {
-                return ts.reduce((acc, v) => lens.execute([v, acc], states), f);
+                return ts.reduce((acc, v) => lens.execute([v, acc], ctx), f);
             });
 
-            return st.execute(c, states);
+            return st.execute(c, ctx);
         });
     }
 }
 
+/**
+ * Lens for traversing outgoing edges with an optional predicate filter.
+ * @param pred - Predicate to match for outgoing edges.
+ * @returns A multi-valued lens over matching Cont nodes.
+ */
 export function pred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM(({ quads, id }) => {
         const out = quads.filter(
@@ -183,6 +299,11 @@ export function pred(pred?: Term): BasicLensM<Cont, Cont> {
     });
 }
 
+/**
+ * Lens for traversing incoming edges with an optional predicate filter.
+ * @param pred - Predicate to match for incoming edges.
+ * @returns A multi-valued lens over matching Cont nodes.
+ */
 export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM(({ quads, id }) => {
         const out = quads.filter(
@@ -192,6 +313,11 @@ export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
     });
 }
 
+/**
+ * Lens returning triple containers matching a subject/predicate.
+ * @param pred - Predicate to filter triples.
+ * @returns Multi-valued lens over Cont<Quad>.
+ */
 export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
     return new BasicLensM(({ quads, id }) => {
         const out = quads.filter(
@@ -201,6 +327,10 @@ export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
     });
 }
 
+/**
+ * Deduplicates Cont elements based on term type and value.
+ * @returns A multi-valued lens of unique Cont elements.
+ */
 export function unique(): BasicLensM<Cont[], Cont> {
     return new BasicLensM((qs) => {
         const literals: { [id: string]: Cont } = {};
@@ -220,12 +350,23 @@ export function unique(): BasicLensM<Cont[], Cont> {
     });
 }
 
+/**
+ * Extracts all subjects from a set of quads into Cont containers.
+ * @returns Multi-valued lens over unique subjects.
+ */
 export function subjects(): BasicLensM<Quad[], Cont> {
     return new BasicLensM((quads) => {
         return quads.map((x) => ({ id: x.subject, quads }));
     });
 }
 
+/**
+ * Matches quads based on optional subject, predicate, and object patterns.
+ * @param subject - Term to match as subject.
+ * @param predicate - Term to match as predicate.
+ * @param object - Term to match as object.
+ * @returns A multi-valued lens over matching Quad Cont containers.
+ */
 export function match(
     subject: Term | undefined,
     predicate: Term | undefined,
@@ -243,6 +384,9 @@ export function match(
     });
 }
 
+/**
+ * Lens returning the subject of a quad.
+ */
 export const subject: BasicLens<Cont<Quad>, Cont> = new BasicLens(
     ({ id, quads }) => ({
         id: id.subject,
@@ -250,6 +394,9 @@ export const subject: BasicLens<Cont<Quad>, Cont> = new BasicLens(
     }),
 );
 
+/**
+ * Lens returning the predicate of a quad.
+ */
 export const predicate: BasicLens<Cont<Quad>, Cont> = new BasicLens(
     ({ id, quads }) => ({
         id: id.predicate,
@@ -257,6 +404,9 @@ export const predicate: BasicLens<Cont<Quad>, Cont> = new BasicLens(
     }),
 );
 
+/**
+ * Lens returning the object of a quad.
+ */
 export const object: BasicLens<Cont<Quad>, Cont> = new BasicLens(
     ({ id, quads }) => ({
         id: id.object,
@@ -264,6 +414,9 @@ export const object: BasicLens<Cont<Quad>, Cont> = new BasicLens(
     }),
 );
 
+/**
+ * Identity lens returning the input container unchanged.
+ */
 export function empty<C>(): BasicLens<C, C> {
     return new BasicLens((x) => x);
 }

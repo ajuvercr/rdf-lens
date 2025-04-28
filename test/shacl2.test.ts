@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Quad } from "@rdfjs/types";
+import { Quad, Term } from "@rdfjs/types";
 import { RDF } from "@treecg/types";
 import { Parser } from "n3";
 import { envReplace, extractShapes } from "../src/shacl";
@@ -109,7 +109,15 @@ ${prefixes}
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-        const object = output.lenses[quad.object.value].execute({
+        type Point = { x: number; y: number };
+        type Object = {
+            required: string;
+            multiple: string[];
+            atLeast: string[];
+            certainPoint: Point;
+            dataPoint: Point;
+        };
+        const object = <Object>output.lenses[quad.object.value].execute({
             id: quad.subject,
             quads,
         });
@@ -167,7 +175,10 @@ ${prefixes}
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-        const object = output.lenses[quad.object.value].execute({
+        type Point = { x: number; y: number; z: number };
+        const object = <{ dataPoint: Point }>output.lenses[
+            quad.object.value
+        ].execute({
             id: quad.subject,
             quads,
         });
@@ -193,10 +204,14 @@ ${prefixes}
 
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-        const object = output.lenses[quad.object.value].execute({
-            id: quad.subject,
-            quads,
-        });
+
+        type Point = { x: number; y: number };
+        const object = <{ certainPoint: Point; dataPoint?: Point }>(
+            output.lenses[quad.object.value].execute({
+                id: quad.subject,
+                quads,
+            })
+        );
 
         expect(object.certainPoint.x).toBe(5);
         expect(object.certainPoint.y).toBe(42);
@@ -249,10 +264,13 @@ ${prefixes}
 
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-        const object = output.lenses[quad.object.value].execute({
+        const object = <{ multiple: unknown[] }>output.lenses[
+            quad.object.value
+        ].execute({
             id: quad.subject,
             quads,
         });
+
         expect(object.multiple).toEqual([]);
     });
 
@@ -306,7 +324,9 @@ ${prefixes}
 
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-        const obj = output.lenses[quad.object.value].execute({
+        const obj = <{ x: string; y: string }>output.lenses[
+            quad.object.value
+        ].execute({
             id: quad.subject,
             quads,
         });
@@ -344,10 +364,12 @@ ${prefixes}
 
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-        const obj = output.lenses[quad.object.value].execute({
-            id: quad.subject,
-            quads,
-        });
+        const obj = <{ strings: string[]; points: { strings: string[] }[] }>(
+            output.lenses[quad.object.value].execute({
+                id: quad.subject,
+                quads,
+            })
+        );
 
         expect(obj.strings).toEqual(["1", "2", "3"]);
         expect(
@@ -418,13 +440,18 @@ ${prefixes}
 
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
-        const obj = output.lenses[quad.object.value].execute(
+        const obj = <
             {
-                id: quad.subject,
-                quads,
-            },
-            [],
-        );
+                id: Term;
+                path: BasicLensM<Cont, Cont>;
+                cbd: unknown[];
+                context: Quad[];
+                custom: { value: string };
+            }
+        >output.lenses[quad.object.value].execute({
+            id: quad.subject,
+            quads,
+        });
 
         test("Shapes contain rdfl lenses", () => {
             const shapes = Object.keys(output.lenses);
@@ -543,7 +570,7 @@ ${prefixes}
                 path2: BasicLensM<Cont, Cont>;
                 complex: BasicLensM<Cont, Cont>;
             }
-        >output.lenses[quad.object.value].execute(start, []);
+        >output.lenses[quad.object.value].execute(start);
 
         test("From env variable that is set", () => {
             const path1 = obj.path.execute(start).map((x) => x.id.value);

@@ -1,11 +1,13 @@
 import { Quad, Quad_Object, Term } from "@rdfjs/types";
-import { PROV, RDF, XSD } from "@treecg/types";
+import { RDF, XSD } from "@treecg/types";
 import {
     BasicLens,
     BasicLensM,
     Cont,
+    createContext,
     empty,
     invPred,
+    LensContext,
     match,
     pred,
     subject,
@@ -44,9 +46,9 @@ export function toLens(
         const base = (() => {
             if (maxCount < 2) {
                 return field.path.one().then(
-                    new BasicLens((x, _, states) => {
+                    new BasicLens((x, ctx) => {
                         if (x) {
-                            return field.extract.execute(x, states);
+                            return field.extract.execute(x, ctx);
                         } else {
                             if (minCount > 0) {
                                 throw "Thing is undefined " + field.name;
@@ -105,24 +107,22 @@ const RDFListElement = pred(RDF.terms.first)
     .expectOne()
     .and(pred(RDF.terms.rest).expectOne());
 
-export const RdfList: BasicLens<Cont, Term[]> = new BasicLens(
-    (c, _, states) => {
-        if (c.id.equals(RDF.terms.nil)) {
-            return [];
-        }
+export const RdfList: BasicLens<Cont, Term[]> = new BasicLens((c, ctx) => {
+    if (c.id.equals(RDF.terms.nil)) {
+        return [];
+    }
 
-        const [first, rest] = RDFListElement.execute(c, states);
-        const els = RdfList.execute(rest, states);
-        els.unshift(first.id);
-        return els;
-    },
-);
+    const [first, rest] = RDFListElement.execute(c, ctx);
+    const els = RdfList.execute(rest, ctx);
+    els.unshift(first.id);
+    return els;
+});
 
 export const ShaclSequencePath: BasicLens<
     Cont,
     BasicLensM<Cont, Cont>
-> = new BasicLens((c, _, states) => {
-    const pathList = RdfList.execute(c, states);
+> = new BasicLens((c, ctx) => {
+    const pathList = RdfList.execute(c, ctx);
     const paths = pathList.map((x) =>
         ShaclPath.execute({ id: x, quads: c.quads }),
     );
@@ -143,13 +143,13 @@ export const ShaclSequencePath: BasicLens<
 export const ShaclAlternativepath: BasicLens<
     Cont,
     BasicLensM<Cont, Cont>
-> = new BasicLens((c, _, states) => {
+> = new BasicLens((c, ctx) => {
     const options = pred(SHACL.alternativePath)
         .one()
         .then(RdfList)
-        .execute(c, states);
+        .execute(c, ctx);
     const optionLenses = options.map((id) =>
-        ShaclPath.execute({ id, quads: c.quads }, states),
+        ShaclPath.execute({ id, quads: c.quads }, ctx),
     );
     return optionLenses[0].orAll(...optionLenses.slice(1));
 });
@@ -164,8 +164,8 @@ export const ShaclInversePath: BasicLens<Cont, BasicLensM<Cont, Cont>> = pred(
 )
     .one()
     .then(
-        new BasicLens<Cont, BasicLensM<Cont, Cont>>((c, _, states) => {
-            const pathList = RdfList.execute(c, states);
+        new BasicLens<Cont, BasicLensM<Cont, Cont>>((c, ctx) => {
+            const pathList = RdfList.execute(c, ctx);
 
             if (pathList.length === 0) {
                 return new BasicLensM((c) => [c]);
@@ -195,13 +195,13 @@ export function MultiPath(
     return pred(predicate)
         .one()
         .then(
-            new BasicLens<Cont, BasicLensM<Cont, Cont>>((c, _, states) => {
-                return ShaclPath.execute(c, states);
+            new BasicLens<Cont, BasicLensM<Cont, Cont>>((c, ctx) => {
+                return ShaclPath.execute(c, ctx);
             }),
         )
         .map(
             (x) =>
-                new BasicLensM<Cont, Cont>((c, _, states) => {
+                new BasicLensM<Cont, Cont>((c, ctx) => {
                     const out: Cont[] = [];
                     let current = [c];
                     let done = 0;
@@ -216,7 +216,7 @@ export function MultiPath(
                         current = [];
                         for (const c of todo) {
                             try {
-                                const news = x.execute(c, states);
+                                const news = x.execute(c, ctx);
                                 console.log("adding ", news.length, "news");
                                 current.push(...news);
 
@@ -334,7 +334,7 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
 
     return checkType
         .and(envName, defaultValue, envDatatype)
-        .map(([_thing, { key }, { defaultValue }, { dt }]) => {
+        .map(([_, { key }, { defaultValue }, { dt }]) => {
             const value = process.env[key] || defaultValue;
             const thisDt = dataType || dt || XSD.terms.custom("literal");
 
@@ -444,22 +444,20 @@ function extractProperty(
     const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
         field(SHACL.class, "clazz").map(({ clazz: expected_class }) => {
             return {
-                extract: new BasicLens<Cont, unknown>(
-                    ({ id, quads }, _, states) => {
-                        // We did not find a type, so use the expected class lens
-                        const lens = cache[expected_class];
-                        if (!lens) {
-                            throw `Tried extracting class ${expected_class} but no shape was defined`;
-                        }
-                        if (apply[expected_class]) {
-                            return lens
-                                .map(apply[expected_class])
-                                .execute({ id, quads }, states);
-                        } else {
-                            return lens.execute({ id, quads }, states);
-                        }
-                    },
-                ),
+                extract: new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
+                    // We did not find a type, so use the expected class lens
+                    const lens = cache[expected_class];
+                    if (!lens) {
+                        throw `Tried extracting class ${expected_class} but no shape was defined`;
+                    }
+                    if (apply[expected_class]) {
+                        return lens
+                            .map(apply[expected_class])
+                            .execute({ id, quads }, ctx);
+                    } else {
+                        return lens.execute({ id, quads }, ctx);
+                    }
+                }),
             };
         });
 
@@ -500,6 +498,20 @@ type CachedLens = {
         from: BasicLens<Cont, unknown>;
     }[];
 };
+
+function getCacheState<I, O, T>(
+    le: BasicLens<I, O>,
+    ctx: LensContext,
+    st: () => T,
+): T {
+    const out = <T | undefined>ctx.stateMap.get(le);
+    if (out !== undefined) return out;
+
+    const o = st();
+    ctx.stateMap.set(le, o);
+    return o;
+}
+
 export const Cached = function (
     lens: BasicLens<Cont, unknown>,
     cachedLenses: CachedLens,
@@ -511,15 +523,12 @@ export const Cached = function (
         return found.lens;
     }
 
-    const newLens = new BasicLens<Cont, unknown>(({ id, quads }, _, states) => {
-        const state: { namedNodes: StateDict; blankNodes: StateDict } =
-            <{ namedNodes: StateDict; blankNodes: StateDict }>(
-                states[lens.index]
-            ) ??
-            (states[lens.index] = {
-                namedNodes: <StateDict>{},
-                blankNodes: <StateDict>{},
-            });
+    const newLens = new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
+        const state = getCacheState(newLens, ctx, () => ({
+            namedNodes: <StateDict>{},
+            blankNodes: <StateDict>{},
+        }));
+
         let stateDict: StateDict = {};
         if (id.termType == "NamedNode") {
             stateDict = state.namedNodes = state.namedNodes ?? {};
@@ -540,7 +549,7 @@ export const Cached = function (
         const thisThing = { lens: lens, result: {} };
         stateDict[id.value].push(thisThing);
 
-        const executedLens = lens.execute({ quads, id }, states);
+        const executedLens = lens.execute({ quads, id }, ctx);
         Object.assign(thisThing.result, executedLens);
 
         return thisThing.result;
@@ -555,47 +564,54 @@ export const TypedExtract = function (
     apply: ApplyDict,
     subClasses: SubClasses,
 ): BasicLens<Cont, unknown> {
-    return new BasicLens(({ id, quads }, state, states) => {
-        const ty = quads.find(
-            (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
-        )?.object.value;
+    const lens: BasicLens<Cont, unknown> = new BasicLens(
+        ({ id, quads }, ctx) => {
+            const ty = quads.find(
+                (q) =>
+                    q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
+            )?.object.value;
 
-        if (!ty) {
-            return;
-        }
-
-        // We found a type, let's see if the expected class is inside the class hierachry
-        const lenses: (typeof cache)[string][] = [];
-
-        let current = ty;
-        while (current) {
-            const thisLens = cache[current];
-            if (thisLens) {
-                lenses.push(Cached(thisLens, <CachedLens>state));
+            if (!ty) {
+                return;
             }
-            current = subClasses[current];
-        }
 
-        if (lenses.length === 0) {
-            // Maybe we just return here
-            // Or we log
-            // Or we make it conditional
-            throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
-        }
+            // We found a type, let's see if the expected class is inside the class hierachry
+            const lenses: (typeof cache)[string][] = [];
 
-        const finalLens =
-            lenses.length == 1
-                ? lenses[0]
-                : lenses[0]
-                      .and(...lenses.slice(1))
-                      .map((xs) => Object.assign({}, ...xs));
+            let current = ty;
+            while (current) {
+                const thisLens = cache[current];
+                if (thisLens) {
+                    const state: CachedLens = getCacheState(lens, ctx, () => ({
+                        lenses: [],
+                    }));
+                    lenses.push(Cached(thisLens, <CachedLens>state));
+                }
+                current = subClasses[current];
+            }
 
-        if (apply[ty]) {
-            return finalLens.map(apply[ty]).execute({ id, quads }, states);
-        } else {
-            return finalLens.execute({ id, quads }, states);
-        }
-    });
+            if (lenses.length === 0) {
+                // Maybe we just return here
+                // Or we log
+                // Or we make it conditional
+                throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
+            }
+
+            const finalLens =
+                lenses.length == 1
+                    ? lenses[0]
+                    : lenses[0]
+                          .and(...lenses.slice(1))
+                          .map((xs) => Object.assign({}, ...xs));
+
+            if (apply[ty]) {
+                return finalLens.map(apply[ty]).execute({ id, quads }, ctx);
+            } else {
+                return finalLens.execute({ id, quads }, ctx);
+            }
+        },
+    );
+    return lens;
 };
 
 export type ApplyDict = { [label: string]: (item: unknown) => unknown };
@@ -666,7 +682,7 @@ export function extractShapes(
         .then(unique())
         .asMulti()
         .thenSome(extractShape(cache, subClasses, apply))
-        .execute(quads, [])
+        .execute(quads, createContext())
         .flat();
     const lenses = [];
 

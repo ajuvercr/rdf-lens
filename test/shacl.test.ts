@@ -1,4 +1,3 @@
-/* eslint-disable function-paren-newline */
 import { describe, expect, test } from "vitest";
 import { NamedNode, Quad, Term } from "@rdfjs/types";
 import { DataFactory } from "rdf-data-factory";
@@ -205,7 +204,7 @@ const ImpTargetClass: BasicLens<Cont<Term>, BasicLensM<Quad[], Cont<Term>>> =
         .filter(({ id }) => id.equals(RDFS.Class))
         .expectOne()
         .and(empty<Cont<Term>>())
-        .map(([_clazz, start]) =>
+        .map(([_, start]) =>
             match(undefined, RDF.type, start.id).thenAll(subject),
         );
 
