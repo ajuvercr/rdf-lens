@@ -8,6 +8,7 @@ import {
     empty,
     invPred,
     LensContext,
+    LensError,
     match,
     pred,
     subject,
@@ -56,13 +57,20 @@ export function toLens(
         const maxCount = field.maxCount || Number.MAX_SAFE_INTEGER;
         const base = (() => {
             if (maxCount < 2) {
-                return field.path.one().then(
+                return field.path.one(undefined).then(
                     new BasicLens((x, ctx) => {
                         if (x) {
+                            ctx.lineage.push({
+                                name: "from object",
+                                opts: x.id,
+                            });
                             return field.extract.execute(x, ctx);
                         } else {
                             if (minCount > 0) {
-                                throw "Thing is undefined " + field.name;
+                                throw new LensError(
+                                    "Field is not defined and required",
+                                    ctx.lineage.slice(),
+                                );
                             } else {
                                 return x;
                             }
@@ -81,12 +89,18 @@ export function toLens(
                 .thenFlat(thenListExtract.or(noListExtract).asMulti())
                 .thenAll(field.extract)
                 .map((x) => x.filter((x) => x !== undefined))
-                .map((xs) => {
+                .map((xs, ctx) => {
                     if (xs.length < minCount) {
-                        throw `${shape.ty}:${field.name} required at least ${minCount} elements, found ${xs.length}`;
+                        throw new LensError("Mininum Count violation", [
+                            { name: "found:", opts: xs.length },
+                            ...ctx.lineage.slice(),
+                        ]);
                     }
                     if (xs.length > maxCount) {
-                        throw `${shape.ty}:${field.name} required at most ${maxCount} elements, found ${xs.length}`;
+                        throw new LensError("Maximum Count violation", [
+                            { name: "found: " + xs.length, opts: [] },
+                            ...ctx.lineage.slice(),
+                        ]);
                     }
                     return xs;
                 })
@@ -98,15 +112,27 @@ export function toLens(
                         return out;
                     }
                 });
-        })();
-
-        const asField = base.map((x) => {
-            const out = <{ [label: string]: unknown }>{};
-            out[field.name] = x;
-            return out;
+        })().named("processing field", {
+            name: field.name,
+            minCount: field.minCount,
+            maxCount: field.maxCount,
         });
 
-        return minCount > 0 ? asField : asField.or(empty().map(() => ({})));
+        const asField = empty<Cont>()
+            .named("from object", [], (c) => c.id)
+            .then(base)
+            .map((x) => {
+                const out = <{ [label: string]: unknown }>{};
+                out[field.name] = x;
+                return out;
+            })
+            .named("handling shape", {
+                id: shape.id,
+                ty: shape.ty.value,
+                desription: shape.description,
+            });
+
+        return asField;
     });
 
     return fields[0]
@@ -254,7 +280,6 @@ export function MultiPath(
                         for (const c of todo) {
                             try {
                                 const news = x.execute(c, ctx);
-                                console.log("adding ", news.length, "news");
                                 current.push(...news);
 
                                 if (done >= min && (!max || done <= max)) {
@@ -368,9 +393,12 @@ type SubClasses = {
 function envLens(dataType?: Term): BasicLens<Cont, unknown> {
     const checkType = pred(RDF.terms.type)
         .thenSome(
-            new BasicLens(({ id }) => {
+            new BasicLens(({ id }, ctx) => {
                 if (!id.equals(RDFL.terms.EnvVariable)) {
-                    throw "expected type " + RDFL.EnvVariable;
+                    throw new LensError(
+                        "Expected type " + RDFL.EnvVariable,
+                        ctx.lineage,
+                    );
                 }
                 return { checked: true };
             }),
@@ -395,18 +423,17 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
 
     return checkType
         .and(envName, defaultValue, envDatatype)
-        .map(([_, { key }, { defaultValue }, { dt }]) => {
+        .map(([_, { key }, { defaultValue }, { dt }], ctx) => {
             const value = process.env[key] || defaultValue;
             const thisDt = dataType || dt || XSD.terms.custom("literal");
 
             if (value) {
                 return dataTypeToExtract(thisDt, literal(value));
             } else {
-                throw (
-                    "Nothing set for ENV " +
-                    key +
-                    ". No default was set either!"
-                );
+                throw new LensError("ENV and default are not set", [
+                    { name: "Env Key", opts: key },
+                    ...ctx.lineage,
+                ]);
             }
         });
 }
@@ -482,7 +509,7 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
         .thenAll(subject)
         .reduce(reduce, empty<Quad[]>());
 
-    return sliced().then(actualReplace);
+    return sliced<Quad>().then(actualReplace);
 }
 
 /**
@@ -527,7 +554,16 @@ function extractProperty(
                     // We did not find a type, so use the expected class lens
                     const lens = cache[expected_class];
                     if (!lens) {
-                        throw `Tried extracting class ${expected_class} but no shape was defined`;
+                        throw new LensError(
+                            "Tried extracting class, but no shape was defined",
+                            [
+                                {
+                                    name: "Found type: " + expected_class,
+                                    opts: Object.keys(cache),
+                                },
+                                ...ctx.lineage.slice(),
+                            ],
+                        );
                     }
                     if (apply[expected_class]) {
                         return lens
@@ -536,7 +572,7 @@ function extractProperty(
                     } else {
                         return lens.execute({ id, quads }, ctx);
                     }
-                }),
+                }).named("extracting class", expected_class),
             };
         });
 
@@ -548,7 +584,8 @@ function extractProperty(
 /**
  * CBDLens extracts the Concise Bounded Description (CBD) for a subject from a set of quads, traversing blank nodes recursively.
  */
-export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }) => {
+export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }, cont) => {
+    cont.lineage.push({ name: "CBD", opts: ["from: " + id.value] });
     const done = new Set<string>();
     const todo = [id];
     const out: Quad[] = [];
@@ -664,53 +701,56 @@ export const TypedExtract = function (
     apply: ApplyDict,
     subClasses: SubClasses,
 ): BasicLens<Cont, unknown> {
-    const lens: BasicLens<Cont, unknown> = new BasicLens(
-        ({ id, quads }, ctx) => {
-            const ty = quads.find(
-                (q) =>
-                    q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
-            )?.object.value;
+    const lens = new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
+        const ty = quads.find(
+            (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
+        )?.object.value;
 
-            if (!ty) {
-                return;
+        ctx.lineage.push({ name: "Found type", opts: ty });
+        ctx.lineage.push({ name: "TypedExtract", opts: undefined });
+
+        if (!ty) {
+            throw new LensError(
+                "Expected a type, found none",
+                ctx.lineage.slice(),
+            );
+        }
+
+        // We found a type, let's see if the expected class is inside the class hierachry
+        const lenses: (typeof cache)[string][] = [];
+
+        let current = ty;
+        while (current) {
+            const thisLens = cache[current];
+            if (thisLens) {
+                const state: CachedLens = getCacheState(lens, ctx, () => ({
+                    lenses: [],
+                }));
+                lenses.push(Cached(thisLens, <CachedLens>state));
             }
+            current = subClasses[current];
+        }
 
-            // We found a type, let's see if the expected class is inside the class hierachry
-            const lenses: (typeof cache)[string][] = [];
+        if (lenses.length === 0) {
+            throw new LensError(
+                "Expected a lens for type, found none",
+                ctx.lineage.slice(),
+            );
+        }
 
-            let current = ty;
-            while (current) {
-                const thisLens = cache[current];
-                if (thisLens) {
-                    const state: CachedLens = getCacheState(lens, ctx, () => ({
-                        lenses: [],
-                    }));
-                    lenses.push(Cached(thisLens, <CachedLens>state));
-                }
-                current = subClasses[current];
-            }
+        const finalLens =
+            lenses.length == 1
+                ? lenses[0]
+                : lenses[0]
+                      .and(...lenses.slice(1))
+                      .map((xs) => Object.assign({}, ...xs));
 
-            if (lenses.length === 0) {
-                // Maybe we just return here
-                // Or we log
-                // Or we make it conditional
-                throw `Tried the classhierarchy for ${ty}, but found no shape definition`;
-            }
-
-            const finalLens =
-                lenses.length == 1
-                    ? lenses[0]
-                    : lenses[0]
-                          .and(...lenses.slice(1))
-                          .map((xs) => Object.assign({}, ...xs));
-
-            if (apply[ty]) {
-                return finalLens.map(apply[ty]).execute({ id, quads }, ctx);
-            } else {
-                return finalLens.execute({ id, quads }, ctx);
-            }
-        },
-    );
+        if (apply[ty]) {
+            return finalLens.map(apply[ty]).execute({ id, quads }, ctx);
+        } else {
+            return finalLens.execute({ id, quads }, ctx);
+        }
+    });
     return lens;
 };
 
@@ -730,9 +770,12 @@ export function extractShape(
 ): BasicLens<Cont, Shape[]> {
     const checkTy = pred(RDF.terms.type)
         .one()
-        .map(({ id }) => {
+        .map(({ id }, ctx) => {
             if (id.equals(SHACL.NodeShape)) return {};
-            throw "Shape is not sh:NodeShape";
+            throw new LensError("Expected type sh:NodeShape", [
+                { name: "found type", opts: id.value },
+                ...ctx.lineage,
+            ]);
         });
 
     const idLens = empty<Cont>().map(({ id }) => ({ id: id.value }));
@@ -748,7 +791,7 @@ export function extractShape(
         "description",
     );
     const fields = pred(SHACL.property)
-        .thenSome(extractProperty(cache, subclasses, apply))
+        .thenAll(extractProperty(cache, subclasses, apply))
         .map((fields) => ({ fields }));
 
     return multiple

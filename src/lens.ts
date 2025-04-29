@@ -5,18 +5,45 @@ import type { Quad, Term } from "@rdfjs/types";
  */
 export type Cont<Q = Term> = { id: Q; quads: Quad[] };
 
+export type Lineage = {
+    name: string;
+    opts: unknown | undefined;
+};
+
+export class LensError extends Error {
+    lineage: Lineage[];
+
+    constructor(message: string, lineage: Lineage[]) {
+        super(message);
+        this.message = message;
+        this.lineage = lineage;
+    }
+}
+
 /**
  * Per-run context for tracking lens state
  */
 export interface LensContext {
     stateMap: Map<BasicLens<unknown, unknown>, unknown>;
+    lineage: Lineage[];
+    clone(): this;
 }
 
 /**
  * Create a fresh context for a lens execution run
  */
 export function createContext(): LensContext {
-    return { stateMap: new Map() };
+    const ctx = {
+        stateMap: new Map(),
+        lineage: [],
+    };
+    const clone = () => ({
+        clone,
+        stateMap: ctx.stateMap,
+        lineage: ctx.lineage.slice(),
+    });
+
+    return Object.assign(ctx, { clone });
 }
 
 /**
@@ -39,6 +66,21 @@ export class BasicLens<C, T> {
      */
     constructor(execute: (container: C, ctx: LensContext) => T) {
         this._exec = execute;
+    }
+
+    named(
+        name: string,
+        opts?: unknown,
+        cb?: (c: C) => unknown,
+    ): BasicLens<C, T> {
+        return new BasicLens<C, T>((c, ctx) => {
+            let extras = asList(opts) || [];
+            if (cb) {
+                extras = [...extras, ...asList(cb(c))];
+            }
+            ctx.lineage.push({ name, opts: deconstructList(extras) });
+            return this.execute(c, ctx);
+        });
     }
 
     /**
@@ -64,8 +106,10 @@ export class BasicLens<C, T> {
     ): BasicLens<C, [T, ...{ [K in keyof F]: F[K] }]> {
         return <BasicLens<C, [T, ...{ [K in keyof F]: F[K] }]>>(
             new BasicLens((c, ctx) => {
-                const a = this.execute(c, ctx);
-                const rest: unknown[] = and.map((x) => x.execute(c, ctx));
+                const a = this.execute(c, ctx.clone());
+                const rest: unknown[] = and.map((x) =>
+                    x.execute(c, ctx.clone()),
+                );
                 return [a, ...rest];
             })
         );
@@ -81,7 +125,7 @@ export class BasicLens<C, T> {
             const all = [this, ...others];
             return all.flatMap((x) => {
                 try {
-                    return [x.execute(c, ctx)];
+                    return [x.execute(c, ctx.clone())];
                 } catch (ex: unknown) {
                     return [];
                 }
@@ -96,18 +140,20 @@ export class BasicLens<C, T> {
      */
     or(...others: BasicLens<C, T>[]): BasicLens<C, T> {
         return new BasicLens((c, ctx) => {
+            const errors = [];
             try {
                 return this.execute(c, ctx);
             } catch (ex: unknown) {
+                errors.push(ex);
                 for (let i = 0; i < others.length; i++) {
                     try {
-                        return others[i].execute(c, ctx);
+                        return others[i].execute(c, ctx.clone());
                     } catch (ex: unknown) {
-                        // this can be ignored
+                        errors.push(ex);
                     }
                 }
             }
-            throw "nope";
+            throw errors;
         });
     }
 
@@ -116,10 +162,10 @@ export class BasicLens<C, T> {
      * @param fn - Function applied to the lens result.
      * @returns A lens producing the transformed result.
      */
-    map<F>(fn: (t: T) => F): BasicLens<C, F> {
+    map<F>(fn: (t: T, ctx: LensContext) => F): BasicLens<C, F> {
         return new BasicLens((c, ctx) => {
             const a = this.execute(c, ctx);
-            return fn(a);
+            return fn(a, ctx);
         });
     }
 
@@ -146,10 +192,35 @@ export class BasicLens<C, T> {
     }
 }
 
+function deconstructList<T>(x: T[]): T[] | T {
+    if (x.length == 1) {
+        return x[0];
+    }
+    return x;
+}
+
+function asList<T>(x: T | T[]): T[] {
+    if (Array.isArray(x)) return x;
+    return [x];
+}
 /**
  * Multi-valued lens class for handling arrays of data.
  */
 export class BasicLensM<C, T> extends BasicLens<C, T[]> {
+    named(
+        name: string,
+        opts?: unknown,
+        cb?: (c: C) => unknown,
+    ): BasicLensM<C, T> {
+        return new BasicLensM<C, T>((c, ctx) => {
+            let extras = asList(opts) || [];
+            if (cb) {
+                extras = [...extras, ...asList(cb(c))];
+            }
+            ctx.lineage.push({ name, opts: deconstructList(extras) });
+            return this.execute(c, ctx);
+        });
+    }
     /**
      * Returns the first element of the result array or a default value.
      * @param def - Default value if no result exists.
@@ -170,7 +241,11 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
     expectOne(): BasicLens<C, T> {
         return new BasicLens((c, ctx) => {
             const qs = this.execute(c, ctx);
-            if (qs.length < 1) throw "Nope";
+            if (qs.length < 1)
+                throw new LensError(
+                    "Expected one, found none",
+                    ctx.lineage.slice(),
+                );
             return qs[0];
         });
     }
@@ -182,15 +257,8 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
      */
     thenAll<F>(next: BasicLens<T, F>): BasicLensM<C, F> {
         return new BasicLensM((c, ctx) => {
-            const qs = this.execute(c, ctx);
-            return qs.flatMap((x) => {
-                try {
-                    const o = next.execute(x, ctx);
-                    return [o];
-                } catch (ex: unknown) {
-                    return [];
-                }
-            });
+            const qs = this.execute(c, ctx.clone());
+            return qs.map((x) => next.execute(x, ctx.clone()));
         });
     }
 
@@ -198,7 +266,18 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
      * Alias for thenAll.
      */
     thenSome<F>(next: BasicLens<T, F>): BasicLensM<C, F> {
-        return this.thenAll(next);
+        return new BasicLensM((c, ctx) => {
+            const qs = this.execute(c, ctx.clone());
+            return qs.flatMap((x) => {
+                try {
+                    const o = next.execute(x, ctx.clone());
+                    return [o];
+                } catch (ex: unknown) {
+                    // TODO: at least something should happend with these errors
+                    return [];
+                }
+            });
+        });
     }
 
     /**
@@ -208,8 +287,8 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
      */
     thenFlat<F>(next: BasicLensM<T, F>): BasicLensM<C, F> {
         return new BasicLensM((c, ctx) => {
-            const qs = this.execute(c, ctx);
-            return qs.flatMap((x) => next.execute(x, ctx));
+            const qs = this.execute(c, ctx.clone());
+            return qs.flatMap((x) => next.execute(x, ctx.clone()));
         });
     }
 
@@ -218,10 +297,10 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
      * @param fn - Function to transform each element.
      * @returns A multi-valued lens of transformed elements.
      */
-    mapAll<F>(fn: (t: T) => F): BasicLensM<C, F> {
+    mapAll<F>(fn: (t: T, ctx: LensContext) => F): BasicLensM<C, F> {
         return new BasicLensM((c, ctx) => {
             const qs = this.execute(c, ctx);
-            return qs.map(fn);
+            return qs.map((x) => fn(x, ctx));
         });
     }
 
@@ -234,15 +313,15 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
         return new BasicLensM((c, ctx) => {
             const out = [];
             try {
-                out.push(...this.execute(c, ctx));
+                out.push(...this.execute(c, ctx.clone()));
             } catch (ex: unknown) {
-                // this can be ignored
+                // TODO: at least something should happend with these errors
             }
             for (let i = 0; i < others.length; i++) {
                 try {
-                    out.push(...others[i].execute(c, ctx));
+                    out.push(...others[i].execute(c, ctx.clone()));
                 } catch (ex: unknown) {
-                    // this can be ignored
+                    // TODO: at least something should happend with these errors
                 }
             }
 
@@ -287,12 +366,12 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
  * @returns A multi-valued lens over matching Cont nodes.
  */
 export function pred(pred?: Term): BasicLensM<Cont, Cont> {
-    return new BasicLensM(({ quads, id }) => {
+    return new BasicLensM<Cont, Cont>(({ quads, id }) => {
         const out = quads.filter(
             (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
         );
         return out.map((q) => ({ quads, id: q.object }));
-    });
+    }).named("pred", pred);
 }
 
 /**
@@ -301,12 +380,12 @@ export function pred(pred?: Term): BasicLensM<Cont, Cont> {
  * @returns A multi-valued lens over matching Cont nodes.
  */
 export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
-    return new BasicLensM(({ quads, id }) => {
+    return new BasicLensM<Cont, Cont>(({ quads, id }) => {
         const out = quads.filter(
             (q) => q.object.equals(id) && (!pred || q.predicate.equals(pred)),
         );
         return out.map((q) => ({ quads, id: q.subject }));
-    });
+    }).named("invPred", pred);
 }
 
 /**
@@ -315,12 +394,12 @@ export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
  * @returns Multi-valued lens over Cont<Quad>.
  */
 export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
-    return new BasicLensM(({ quads, id }) => {
+    return new BasicLensM<Cont, Cont<Quad>>(({ quads, id }) => {
         const out = quads.filter(
             (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
         );
         return out.map((q) => ({ quads, id: q }));
-    });
+    }).named("predTriple");
 }
 
 /**
@@ -328,7 +407,7 @@ export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
  * @returns A multi-valued lens of unique Cont elements.
  */
 export function unique(): BasicLensM<Cont[], Cont> {
-    return new BasicLensM((qs) => {
+    return new BasicLensM<Cont[], Cont>((qs) => {
         const literals: { [id: string]: Cont } = {};
         const named: { [id: string]: Cont } = {};
         const blank: { [id: string]: Cont } = {};
@@ -343,7 +422,7 @@ export function unique(): BasicLensM<Cont[], Cont> {
         out.push(...Object.values(named));
         out.push(...Object.values(blank));
         return out;
-    });
+    }).named("unique");
 }
 
 /**
@@ -351,9 +430,9 @@ export function unique(): BasicLensM<Cont[], Cont> {
  * @returns Multi-valued lens over unique subjects.
  */
 export function subjects(): BasicLensM<Quad[], Cont> {
-    return new BasicLensM((quads) => {
+    return new BasicLensM<Quad[], Cont>((quads) => {
         return quads.map((x) => ({ id: x.subject, quads }));
-    });
+    }).named("subjects");
 }
 
 /**
@@ -368,7 +447,7 @@ export function match(
     predicate: Term | undefined,
     object: Term | undefined,
 ): BasicLensM<Quad[], Cont<Quad>> {
-    return new BasicLensM((quads) => {
+    return new BasicLensM<Quad[], Cont<Quad>>((quads) => {
         return quads
             .filter(
                 (x) =>
@@ -377,38 +456,32 @@ export function match(
                     (!object || x.object.equals(object)),
             )
             .map((id) => ({ id, quads }));
-    });
+    }).named("match", { subject, predicate, object });
 }
 
 /**
  * Lens returning the subject of a quad.
  */
-export const subject: BasicLens<Cont<Quad>, Cont> = new BasicLens(
-    ({ id, quads }) => ({
-        id: id.subject,
-        quads,
-    }),
-);
+export const subject = new BasicLens<Cont<Quad>, Cont>(({ id, quads }) => ({
+    id: id.subject,
+    quads,
+})).named("subject");
 
 /**
  * Lens returning the predicate of a quad.
  */
-export const predicate: BasicLens<Cont<Quad>, Cont> = new BasicLens(
-    ({ id, quads }) => ({
-        id: id.predicate,
-        quads,
-    }),
-);
+export const predicate = new BasicLens<Cont<Quad>, Cont>(({ id, quads }) => ({
+    id: id.predicate,
+    quads,
+})).named("predicate");
 
 /**
  * Lens returning the object of a quad.
  */
-export const object: BasicLens<Cont<Quad>, Cont> = new BasicLens(
-    ({ id, quads }) => ({
-        id: id.object,
-        quads,
-    }),
-);
+export const object = new BasicLens<Cont<Quad>, Cont>(({ id, quads }) => ({
+    id: id.object,
+    quads,
+})).named("object");
 
 /**
  * Identity lens returning the input container unchanged.

@@ -4,7 +4,7 @@ import { RDF } from "@treecg/types";
 import { Parser } from "n3";
 import { envReplace, extractShapes } from "../src/shacl";
 import { RDFL } from "../src/ontology";
-import { BasicLensM, Cont } from "../src";
+import { BasicLensM, Cont, LensError } from "../src";
 
 const prefixes = `
 @prefix js: <https://w3id.org/conn/js#> .
@@ -72,11 +72,10 @@ js:JsProcessorShape a sh:NodeShape;
     sh:maxCount 1;
     sh:minCount 1;
   ], [
-    sh:path :point;
+    sh:path :typed;
     sh:class rdfl:TypedExtract;
     sh:name "dataPoint";
     sh:maxCount 1;
-    sh:minCount 1;
   ].
 `;
 
@@ -99,10 +98,14 @@ ${prefixes}
   :multiple "one!";
   :at_least "two!";
   :point [
+    js:x 5;
+    js:y 42;
+  ];
+:typed [
     a js:Point;
     js:x 5;
     js:y 42;
-  ].
+].
 `;
 
         const output = extractShapes(parseQuads(shapes));
@@ -137,6 +140,46 @@ ${prefixes}
   # :required "true";
   :multiple "one!";
   :at_least "two!";
+  :typed [
+    a js:Point;
+    js:x 5;
+    js:y 42;
+  ];
+  :point [
+    js:x 5;
+    js:y 42;
+  ].
+`;
+        const output = extractShapes(parseQuads(shapes));
+
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+
+        let error: LensError | undefined;
+        try {
+            output.lenses[quad.object.value].execute({
+                id: quad.subject,
+                quads,
+            });
+        } catch (ex) {
+            error = ex;
+        }
+        expect(error).toBeDefined();
+        expect(error?.message).toBe("Field is not defined and required");
+    });
+
+    test("Invalid objects", () => {
+        const data = `
+${prefixes}
+<abc> a js:JsProcess;
+  # :required "true";
+  :multiple "one!";
+  :at_least "two!";
+  :typed [
+    a js:Point;
+    js:x 5;
+    js:y 42;
+  ];
   :point [
     a js:Point;
     js:x 5;
@@ -148,12 +191,17 @@ ${prefixes}
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
-        expect(() =>
+        let error: LensError | undefined;
+        try {
             output.lenses[quad.object.value].execute({
                 id: quad.subject,
                 quads,
-            }),
-        ).toThrow();
+            });
+        } catch (ex) {
+            error = ex;
+        }
+        expect(error).toBeDefined();
+        expect(error?.message).toBe("Field is not defined and required");
     });
 
     test("Parse subclassed objects", () => {
@@ -163,6 +211,12 @@ ${prefixes}
   :required "true";
   :multiple "one!";
   :at_least "two!";
+  :typed [
+    a js:3DPoint;
+    js:x 5;
+    js:y 42;
+    js:z 64;
+  ];
   :point [
     a js:3DPoint;
     js:x 5;
@@ -188,13 +242,18 @@ ${prefixes}
         expect(object.dataPoint.z).toBe(64);
     });
 
-    test("Parse objects without type", () => {
+    test("Undefined typed extract throw error", () => {
         const data = `
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
   :multiple "one!";
   :at_least "two!";
+  :typed [
+    a :undefinedType;
+    js:x 5;
+    js:y 42;
+  ];
   :point [
     js:x 5;
     js:y 42;
@@ -206,16 +265,60 @@ ${prefixes}
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
 
         type Point = { x: number; y: number };
-        const object = <{ certainPoint: Point; dataPoint?: Point }>(
-            output.lenses[quad.object.value].execute({
+
+        let error: LensError | undefined = undefined;
+        try {
+            <{ certainPoint: Point; dataPoint?: Point }>output.lenses[
+                quad.object.value
+            ].execute({
                 id: quad.subject,
                 quads,
-            })
-        );
+            });
+        } catch (ex: unknown) {
+            error = <LensError>ex;
+        }
 
-        expect(object.certainPoint.x).toBe(5);
-        expect(object.certainPoint.y).toBe(42);
-        expect(object.dataPoint).toBeUndefined();
+        expect(error).toBeDefined();
+        expect(error!.message).toBe("Expected a lens for type, found none");
+    });
+
+    test("Optional fields that exist but are incorrect throws error", () => {
+        const data = `
+${prefixes}
+<abc> a js:JsProcess;
+  :required "true";
+  :multiple "one!";
+  :at_least "two!";
+  :typed [
+    js:x 5;
+    js:y 42;
+  ];
+  :point [
+    js:x 5;
+    js:y 42;
+  ].
+`;
+        const output = extractShapes(parseQuads(shapes));
+
+        const quads = parseQuads(data);
+        const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
+
+        type Point = { x: number; y: number };
+
+        let error: LensError | undefined = undefined;
+        try {
+            <{ certainPoint: Point; dataPoint?: Point }>output.lenses[
+                quad.object.value
+            ].execute({
+                id: quad.subject,
+                quads,
+            });
+        } catch (ex: unknown) {
+            error = <LensError>ex;
+        }
+
+        expect(error).toBeDefined();
+        expect(error!.message).toBe("Expected a type, found none");
     });
 
     test("Parse fake subclassed objects fail", () => {
@@ -225,6 +328,16 @@ ${prefixes}
   :required "true";
   :multiple "one!";
   :at_least "two!";
+  :typed [
+    a js:JsProcess;
+    :required "true";
+    :multiple "one!";
+    :at_least "two!";
+    :point [
+      js:x 5;
+      js:y 42;
+    ];
+  ];
   :point [
     a js:JsProcess;
     :required "true";
@@ -255,6 +368,11 @@ ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
   :at_least "two!";
+  :typed [
+    a js:Point;
+    js:x 5;
+    js:y 42;
+  ];
   :point [
     js:x 5;
     js:y 42;
@@ -279,6 +397,11 @@ ${prefixes}
 ${prefixes}
 <abc> a js:JsProcess;
   :required "true";
+  :typed [
+    a js:Point;
+    js:x 5;
+    js:y 42;
+  ];
   :point [
     js:x 5;
     js:y 42;
@@ -418,7 +541,12 @@ ${prefixes}
     sh:name "value";
     sh:maxCount 1;
     sh:minCount 1;
-].
+  ], [
+    sh:class js:MyCustomClass;
+    sh:path js:nest;
+    sh:name "nested";
+    sh:maxCount 1;
+  ].
 `;
         const data = `
 ${prefixes}
@@ -433,10 +561,19 @@ ${prefixes}
   <custom> [
     a js:MyCustomClass;
     js:value "VALUE";
+    js:nest [
+        js:value "VALUE3";
+    ];
   ].
 `;
 
-        const output = extractShapes(parseQuads(shape));
+        const output = extractShapes(parseQuads(shape), {
+            "https://w3id.org/conn/js#MyCustomClass": (x: unknown) => {
+                const obj = <{ value: string }>x;
+                obj.value += 2;
+                return obj;
+            },
+        });
 
         const quads = parseQuads(data);
         const quad = quads.find((x) => x.predicate.equals(RDF.terms.type))!;
@@ -446,7 +583,7 @@ ${prefixes}
                 path: BasicLensM<Cont, Cont>;
                 cbd: unknown[];
                 context: Quad[];
-                custom: { value: string };
+                custom: { value: string; nested: { value: string } };
             }
         >output.lenses[quad.object.value].execute({
             id: quad.subject,
@@ -472,7 +609,6 @@ ${prefixes}
         });
 
         test("Path applied to object works", () => {
-            console.log(Object.keys(obj));
             const result = obj.path.execute({ id: obj.id, quads: obj.context });
             expect(result[0].id.value).toEqual("Hello");
         });
@@ -482,7 +618,8 @@ ${prefixes}
         });
 
         test("Custom extract works", () => {
-            expect(obj.custom.value).toBe("VALUE");
+            expect(obj.custom.value).toBe("VALUE2");
+            expect(obj.custom.nested.value).toBe("VALUE32");
         });
     });
 

@@ -40,7 +40,6 @@ async function setupLenses() {
         encoding: "utf8",
     });
     const Shapes = extractShapes(new Parser().parse(shape_str));
-    console.log(Shapes);
     const RecordLens = match(undefined, SDS.terms.payload, undefined)
         .thenAll(subject)
         .thenSome(Shapes.lenses["Record"]);

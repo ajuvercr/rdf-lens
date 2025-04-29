@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { DataFactory, Parser } from "n3";
-import { pred } from "../src/index";
+import { LensError, pred } from "../src/index";
 const { namedNode, literal } = DataFactory;
 
 const tyPred = namedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
@@ -63,5 +63,20 @@ describe("ETL", () => {
         const p = person.execute({ id: namedNode("person"), quads });
         expect(p.name).toEqual("John");
         expect(p.age).toEqual(32);
+    });
+
+    test("direct errors work", () => {
+        let error: LensError | undefined = undefined;
+        try {
+            pred(namedNode("no pred"))
+                .expectOne()
+                .execute({ id: namedNode("s1"), quads });
+        } catch (ex: unknown) {
+            error = <LensError>ex;
+        }
+        expect(error).toBeDefined();
+        expect(error?.message).toBe("Expected one, found none");
+        expect(error?.lineage.length).toBe(1);
+        expect(error?.lineage[0].name).toBe("pred");
     });
 });
