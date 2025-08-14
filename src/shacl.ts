@@ -21,6 +21,16 @@ import { RDFL, RDFS, SHACL } from "./ontology";
 
 const { literal, quad } = new DataFactory();
 
+function termToString(term: Term): string {
+    if (term.termType === "NamedNode") {
+        return "<" + term.value + ">";
+    }
+    if (term.termType === "BlankNode") {
+        return "_:" + term.value;
+    }
+    return JSON.stringify(term.value);
+}
+
 /**
  * ShapeField describes a field/property in a SHACL shape, including its name, path, cardinality, and extraction lens
  */
@@ -42,6 +52,62 @@ export interface Shape {
     fields: ShapeField[];
 }
 
+function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
+    const minCount = field.minCount || 0;
+    const maxCount = field.maxCount || Number.MAX_SAFE_INTEGER;
+    if (maxCount < 2) {
+        return field.path.one(undefined).then(
+            new BasicLens((x, ctx) => {
+                if (x) {
+                    return field.extract.execute(x, ctx);
+                } else {
+                    if (minCount > 0) {
+                        throw new LensError(
+                            "Field is not defined and required",
+                            ctx.lineage.slice(),
+                        );
+                    } else {
+                        return x;
+                    }
+                }
+            }),
+        );
+    }
+    if (maxCount < 2) return field.path.one().then(field.extract);
+
+    const thenListExtract = RdfList.and(empty<Cont>()).map(
+        ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
+    );
+    const noListExtract = empty<Cont>().map((x) => [x]);
+
+    return field.path
+        .thenFlat(thenListExtract.or(noListExtract).asMulti())
+        .thenAll(field.extract)
+        .map((x) => x.filter((x) => x !== undefined))
+        .map((xs, ctx) => {
+            if (xs.length < minCount) {
+                throw new LensError("Mininum Count violation", [
+                    { name: "found:", opts: xs.length },
+                    ...ctx.lineage.slice(),
+                ]);
+            }
+            if (xs.length > maxCount) {
+                throw new LensError("Maximum Count violation", [
+                    { name: "found: " + xs.length, opts: [] },
+                    ...ctx.lineage.slice(),
+                ]);
+            }
+            return xs;
+        })
+        .map((x) => {
+            const out = x.filter((x) => x !== undefined);
+            if (maxCount < 2) {
+                return out[0];
+            } else {
+                return out;
+            }
+        });
+}
 /**
  * Converts a Shape definition into a BasicLens that extracts data objects matching the shape.
  * Handles field cardinality (minCount/maxCount), list extraction, and field mapping.
@@ -50,86 +116,30 @@ export interface Shape {
 export function toLens(
     shape: Shape,
 ): BasicLens<Cont, { [label: string]: unknown }> {
-    if (shape.fields.length === 0) return empty<Cont>().map(() => ({}));
-
+    if (shape.fields.length === 0)
+        return empty<Cont>()
+            .map(() => ({}))
+            .named("first", shape.ty.value)
+            .named("shape", {
+                id: shape.id,
+                type: termToString(shape.ty),
+                description: shape.description,
+            })
+            .named("id", [], (cont) => termToString(cont.id));
     const fields = shape.fields.map((field) => {
-        const minCount = field.minCount || 0;
-        const maxCount = field.maxCount || Number.MAX_SAFE_INTEGER;
-        const base = (() => {
-            if (maxCount < 2) {
-                return field.path.one(undefined).then(
-                    new BasicLens((x, ctx) => {
-                        if (x) {
-                            ctx.lineage.push({
-                                name: "from object",
-                                opts: x.id,
-                            });
-                            return field.extract.execute(x, ctx);
-                        } else {
-                            if (minCount > 0) {
-                                throw new LensError(
-                                    "Field is not defined and required",
-                                    ctx.lineage.slice(),
-                                );
-                            } else {
-                                return x;
-                            }
-                        }
-                    }),
-                );
-            }
-            if (maxCount < 2) return field.path.one().then(field.extract);
-
-            const thenListExtract = RdfList.and(empty<Cont>()).map(
-                ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
-            );
-            const noListExtract = empty<Cont>().map((x) => [x]);
-
-            return field.path
-                .thenFlat(thenListExtract.or(noListExtract).asMulti())
-                .thenAll(field.extract)
-                .map((x) => x.filter((x) => x !== undefined))
-                .map((xs, ctx) => {
-                    if (xs.length < minCount) {
-                        throw new LensError("Mininum Count violation", [
-                            { name: "found:", opts: xs.length },
-                            ...ctx.lineage.slice(),
-                        ]);
-                    }
-                    if (xs.length > maxCount) {
-                        throw new LensError("Maximum Count violation", [
-                            { name: "found: " + xs.length, opts: [] },
-                            ...ctx.lineage.slice(),
-                        ]);
-                    }
-                    return xs;
-                })
-                .map((x) => {
-                    const out = x.filter((x) => x !== undefined);
-                    if (maxCount < 2) {
-                        return out[0];
-                    } else {
-                        return out;
-                    }
-                });
-        })().named("processing field", {
-            name: field.name,
-            minCount: field.minCount,
-            maxCount: field.maxCount,
-        });
+        const base = fieldToLens(field);
 
         const asField = empty<Cont>()
-            .named("from object", [], (c) => c.id)
+            .named("processing field", {
+                name: field.name,
+                minCount: field.minCount,
+                maxCount: field.maxCount,
+            })
             .then(base)
             .map((x) => {
                 const out = <{ [label: string]: unknown }>{};
                 out[field.name] = x;
                 return out;
-            })
-            .named("handling shape", {
-                id: shape.id,
-                ty: shape.ty.value,
-                desription: shape.description,
             });
 
         return asField;
@@ -137,7 +147,13 @@ export function toLens(
 
     return fields[0]
         .and(...fields.slice(1))
-        .map((xs) => Object.assign({}, ...xs));
+        .map((xs) => Object.assign({}, ...xs))
+        .named("shape", {
+            id: shape.id,
+            type: termToString(shape.ty),
+            description: shape.description,
+        })
+        .named("id", [], (cont) => termToString(cont.id));
 }
 
 /**
@@ -172,7 +188,7 @@ export const ShaclSequencePath: BasicLens<
 > = new BasicLens((c, ctx) => {
     const pathList = RdfList.execute(c, ctx);
     const paths = pathList.map((x) =>
-        ShaclPath.execute({ id: x, quads: c.quads }),
+        ShaclPath.execute({ id: x, quads: c.quads }, ctx),
     );
 
     if (paths.length === 0) {
@@ -330,6 +346,26 @@ function field<T extends string, O = string>(
             out[name] = conv(id.value);
             return out;
         });
+}
+
+function f<T extends string, O>(
+    predicate: Term,
+    name: T,
+    lens: BasicLens<Cont, O>,
+): BasicLens<Cont, { [F in T]: O }> {
+    return pred(predicate)
+        .one()
+        .then(lens)
+        .map((item) => {
+            const out = <{ [F in T]: O }>{};
+            out[name] = item;
+            return out;
+        });
+}
+
+const getId: BasicLens<Cont, Term> = empty<Cont>().map(({ id }) => id);
+function constValue<T, O>(value: O): BasicLens<T, O> {
+    return empty<T>().map(() => value);
 }
 
 /**
@@ -773,7 +809,7 @@ export function extractShape(
         .map(({ id }, ctx) => {
             if (id.equals(SHACL.NodeShape)) return {};
             throw new LensError("Expected type sh:NodeShape", [
-                { name: "found type", opts: id.value },
+                { name: "found type", opts: termToString(id) },
                 ...ctx.lineage,
             ]);
         });

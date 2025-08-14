@@ -1,5 +1,14 @@
 import type { Quad, Term } from "@rdfjs/types";
 
+function termToString(term: Term): string {
+    if (term.termType === "NamedNode") {
+        return "<" + term.value + ">";
+    }
+    if (term.termType === "BlankNode") {
+        return "_:" + term.value;
+    }
+    return JSON.stringify(term.value);
+}
 /**
  * Type alias for a container with an ID and quads.
  */
@@ -106,10 +115,8 @@ export class BasicLens<C, T> {
     ): BasicLens<C, [T, ...{ [K in keyof F]: F[K] }]> {
         return <BasicLens<C, [T, ...{ [K in keyof F]: F[K] }]>>(
             new BasicLens((c, ctx) => {
-                const a = this.execute(c, ctx.clone());
-                const rest: unknown[] = and.map((x) =>
-                    x.execute(c, ctx.clone()),
-                );
+                const a = this.execute(c, ctx);
+                const rest: unknown[] = and.map((x) => x.execute(c, ctx));
                 return [a, ...rest];
             })
         );
@@ -371,7 +378,7 @@ export function pred(pred?: Term): BasicLensM<Cont, Cont> {
             (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
         );
         return out.map((q) => ({ quads, id: q.object }));
-    }).named("pred", pred);
+    }).named("pred", pred && termToString(pred));
 }
 
 /**
@@ -385,7 +392,7 @@ export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
             (q) => q.object.equals(id) && (!pred || q.predicate.equals(pred)),
         );
         return out.map((q) => ({ quads, id: q.subject }));
-    }).named("invPred", pred);
+    }).named("invPred", pred && termToString(pred));
 }
 
 /**
@@ -456,7 +463,11 @@ export function match(
                     (!object || x.object.equals(object)),
             )
             .map((id) => ({ id, quads }));
-    }).named("match", { subject, predicate, object });
+    }).named("match", {
+        subject: subject && termToString(subject),
+        predicate: predicate && termToString(predicate),
+        object: object && termToString(object),
+    });
 }
 
 /**
