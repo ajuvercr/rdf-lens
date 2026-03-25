@@ -572,7 +572,10 @@ function extractProperty(
         .map((path) => ({
             path,
         }));
-    const nameLens = field(SHACL.name, "name");
+
+    const nameLens = field(SHACL.custom("codeIdentifier"), "name").or(
+        field(SHACL.name, "name"),
+    );
     const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 

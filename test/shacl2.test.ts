@@ -53,7 +53,7 @@ js:JsProcessorShape a sh:NodeShape;
   sh:property [
     sh:datatype xsd:string;
     sh:path :required;
-    sh:name "required";
+    sh:codeIdentifier "required";
     sh:maxCount 1;
     sh:minCount 1;
   ], [
@@ -63,7 +63,7 @@ js:JsProcessorShape a sh:NodeShape;
   ], [
     sh:datatype xsd:string;
     sh:path :at_least;
-    sh:name "atLeast";
+    sh:codeIdentifier "atLeast";
     sh:minCount 1;
   ], [
     sh:path :point;
