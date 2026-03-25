@@ -54,6 +54,7 @@ js:JsProcessorShape a sh:NodeShape;
     sh:datatype xsd:string;
     sh:path :required;
     sh:codeIdentifier "required";
+    sh:name "some required field lol";
     sh:maxCount 1;
     sh:minCount 1;
   ], [
