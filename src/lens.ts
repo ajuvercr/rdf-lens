@@ -9,10 +9,33 @@ function termToString(term: Term): string {
     }
     return JSON.stringify(term.value);
 }
+
 /**
- * Type alias for a container with an ID and quads.
+ * Interface for quad stores that provide indexed matching capabilities.
+ * Enables O(1) lookups instead of linear scanning.
+ * Matches W3C RDF/JS DatasetCore interface.
  */
-export type Cont<Q = Term> = { id: Q; quads: Quad[] };
+export interface QuadStore {
+    getQuads(
+        subject: Term | undefined,
+        predicate: Term | undefined,
+        object: Term | undefined,
+        graph?: Term | undefined,
+    ): Quad[];
+}
+
+/**
+ * Type alias for a container with an ID and quads (or store).
+ * quads can be either a Quad[] array or a QuadStore for indexed lookups.
+ */
+export type Cont<Q = Term> = { id: Q; quads: Quad[] | QuadStore };
+
+/**
+ * Type guard to check if quads is a QuadStore.
+ */
+function isQuadStore(quads: Quad[] | QuadStore): quads is QuadStore {
+    return typeof (quads as QuadStore).getQuads === "function";
+}
 
 export type Lineage = {
     name: string;
@@ -133,7 +156,7 @@ export class BasicLens<C, T> {
             return all.flatMap((x) => {
                 try {
                     return [x.execute(c, ctx.clone())];
-                } catch (ex: unknown) {
+                } catch (_ex: unknown) {
                     return [];
                 }
             });
@@ -155,7 +178,7 @@ export class BasicLens<C, T> {
                 for (let i = 0; i < others.length; i++) {
                     try {
                         return others[i].execute(c, ctx.clone());
-                    } catch (ex: unknown) {
+                    } catch (_ex: unknown) {
                         errors.push(ex);
                     }
                 }
@@ -279,7 +302,7 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
                 try {
                     const o = next.execute(x, ctx.clone());
                     return [o];
-                } catch (ex: unknown) {
+                } catch (_ex: unknown) {
                     // TODO: at least something should happend with these errors
                     return [];
                 }
@@ -321,13 +344,13 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
             const out = [];
             try {
                 out.push(...this.execute(c, ctx.clone()));
-            } catch (ex: unknown) {
+            } catch (_ex: unknown) {
                 // TODO: at least something should happend with these errors
             }
             for (let i = 0; i < others.length; i++) {
                 try {
                     out.push(...others[i].execute(c, ctx.clone()));
-                } catch (ex: unknown) {
+                } catch (_ex: unknown) {
                     // TODO: at least something should happend with these errors
                 }
             }
@@ -374,10 +397,16 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
  */
 export function pred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM<Cont, Cont>(({ quads, id }) => {
-        const out = quads.filter(
-            (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
+        if (isQuadStore(quads)) {
+            const out = quads.getQuads(id, pred, undefined, undefined);
+            return out.map((q: Quad) => ({ quads, id: q.object }));
+        }
+
+        const out = (quads as Quad[]).filter(
+            (q: Quad) =>
+                q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
         );
-        return out.map((q) => ({ quads, id: q.object }));
+        return out.map((q: Quad) => ({ quads, id: q.object }));
     }).named("pred", pred && termToString(pred));
 }
 
@@ -388,10 +417,16 @@ export function pred(pred?: Term): BasicLensM<Cont, Cont> {
  */
 export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM<Cont, Cont>(({ quads, id }) => {
-        const out = quads.filter(
-            (q) => q.object.equals(id) && (!pred || q.predicate.equals(pred)),
+        if (isQuadStore(quads)) {
+            const out = quads.getQuads(undefined, pred, id, undefined);
+            return out.map((q: Quad) => ({ quads, id: q.subject }));
+        }
+
+        const out = (quads as Quad[]).filter(
+            (q: Quad) =>
+                q.object.equals(id) && (!pred || q.predicate.equals(pred)),
         );
-        return out.map((q) => ({ quads, id: q.subject }));
+        return out.map((q: Quad) => ({ quads, id: q.subject }));
     }).named("invPred", pred && termToString(pred));
 }
 
@@ -402,10 +437,16 @@ export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
  */
 export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
     return new BasicLensM<Cont, Cont<Quad>>(({ quads, id }) => {
-        const out = quads.filter(
-            (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
+        if (isQuadStore(quads)) {
+            const out = quads.getQuads(id, pred, undefined, undefined);
+            return out.map((q: Quad) => ({ quads, id: q }));
+        }
+
+        const out = (quads as Quad[]).filter(
+            (q: Quad) =>
+                q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
         );
-        return out.map((q) => ({ quads, id: q }));
+        return out.map((q: Quad) => ({ quads, id: q }));
     }).named("predTriple");
 }
 
@@ -436,9 +477,32 @@ export function unique(): BasicLensM<Cont[], Cont> {
  * Extracts all subjects from a set of quads into Cont containers.
  * @returns Multi-valued lens over unique subjects.
  */
-export function subjects(): BasicLensM<Quad[], Cont> {
-    return new BasicLensM<Quad[], Cont>((quads) => {
-        return quads.map((x) => ({ id: x.subject, quads }));
+export function subjects(): BasicLensM<Quad[] | QuadStore, Cont> {
+    return new BasicLensM<Quad[] | QuadStore, Cont>((quads) => {
+        // Check if quads is a store
+        if (isQuadStore(quads)) {
+            const store = quads;
+            // Use store for efficient subject extraction
+            const allQuads = store.getQuads(
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+            );
+            const uniqueSubjects = new Map();
+            allQuads.forEach((q: Quad) => {
+                if (!uniqueSubjects.has(q.subject.value)) {
+                    uniqueSubjects.set(q.subject.value, q.subject);
+                }
+            });
+            return Array.from(uniqueSubjects.values()).map((subject) => ({
+                id: subject,
+                quads: store,
+            }));
+        }
+
+        // Standard array processing
+        return (quads as Quad[]).map((x: Quad) => ({ id: x.subject, quads }));
     }).named("subjects");
 }
 
@@ -453,16 +517,29 @@ export function match(
     subject: Term | undefined,
     predicate: Term | undefined,
     object: Term | undefined,
-): BasicLensM<Quad[], Cont<Quad>> {
-    return new BasicLensM<Quad[], Cont<Quad>>((quads) => {
-        return quads
+): BasicLensM<Quad[] | QuadStore, Cont<Quad>> {
+    return new BasicLensM<Quad[] | QuadStore, Cont<Quad>>((quads) => {
+        // Check if quads is a store
+        if (isQuadStore(quads)) {
+            const store = quads;
+            const results = store.getQuads(
+                subject,
+                predicate,
+                object,
+                undefined,
+            );
+            return results.map((id: Quad) => ({ id, quads: store }));
+        }
+
+        // Standard linear filtering
+        return (quads as Quad[])
             .filter(
-                (x) =>
+                (x: Quad) =>
                     (!subject || x.subject.equals(subject)) &&
                     (!predicate || x.predicate.equals(predicate)) &&
                     (!object || x.object.equals(object)),
             )
-            .map((id) => ({ id, quads }));
+            .map((id: Quad) => ({ id, quads }));
     }).named("match", {
         subject: subject && termToString(subject),
         predicate: predicate && termToString(predicate),
