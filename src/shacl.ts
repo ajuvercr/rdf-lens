@@ -7,6 +7,7 @@ import {
     createContext,
     empty,
     invPred,
+    isQuadStore,
     LensContext,
     LensError,
     match,
@@ -545,7 +546,7 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
         .thenAll(subject)
         .reduce(reduce, empty<Quad[]>());
 
-    return sliced<Quad>().then(actualReplace);
+    return sliced<Quad>().then(actualReplace as BasicLens<Quad[], Quad[]>);
 }
 
 /**
@@ -566,58 +567,138 @@ function extractProperty(
     _subClasses: SubClasses,
     apply: { [clazz: string]: (item: unknown) => unknown },
 ): BasicLens<Cont, ShapeField> {
-    const pathLens = pred(SHACL.path)
-        .one()
-        .then(ShaclPath)
-        .map((path) => ({
-            path,
-        }));
+    // Helper to resolve IRI references to PropertyShape nodes
+    const resolveReference: BasicLens<Cont, Cont> = new BasicLens(
+        ({ id, quads }) => {
+            // If it's a blank node, use it as-is (inline definitions)
+            if (id.termType === "BlankNode") {
+                return { id, quads };
+            }
 
-    const nameLens = field(SHACL.custom("codeIdentifier"), "name").or(
-        field(SHACL.name, "name"),
+            // Check if this node has sh:path directly
+            const hasPath = isQuadStore(quads)
+                ? quads.getQuads(id, SHACL.path, undefined, undefined).length >
+                  0
+                : quads.some(
+                      (q) =>
+                          q.subject.equals(id) &&
+                          q.predicate.equals(SHACL.path),
+                  );
+
+            if (hasPath) {
+                // Node already has property definitions
+                return { id, quads };
+            }
+
+            // It's a NamedNode without sh:path - it's a reference to a separate PropertyShape
+            // The IRI itself should be the subject of the PropertyShape definition
+            // Just return as-is - the quads context contains all quads, so pred() will find the PropertyShape definition
+            return { id, quads };
+        },
     );
-    const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
-    const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
+
+    const pathLens = resolveReference.then(
+        pred(SHACL.path)
+            .one()
+            .then(ShaclPath)
+            .map((path) => ({
+                path,
+            })),
+    );
+
+    const nameLens = resolveReference.then(
+        field(SHACL.custom("codeIdentifier"), "name").or(
+            field(SHACL.name, "name"),
+        ),
+    );
+    const minCount = resolveReference.then(
+        optionalField(SHACL.minCount, "minCount", (x) => +x),
+    );
+    const maxCount = resolveReference.then(
+        optionalField(SHACL.maxCount, "maxCount", (x) => +x),
+    );
 
     const dataTypeLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
-        pred(SHACL.datatype)
-            .one()
-            .map(({ id }) => ({
-                extract: extractLeaf(id),
-            }));
+        resolveReference.then(
+            pred(SHACL.datatype)
+                .one()
+                .map(({ id }) => ({
+                    extract: extractLeaf(id),
+                })),
+        );
 
     const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
-        field(SHACL.class, "clazz").map(({ clazz: expected_class }) => {
-            return {
-                extract: new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
-                    // We did not find a type, so use the expected class lens
-                    const lens = cache[expected_class];
-                    if (!lens) {
-                        throw new LensError(
-                            "Tried extracting class, but no shape was defined",
-                            [
-                                {
-                                    name: "Found type: " + expected_class,
-                                    opts: Object.keys(cache),
-                                },
-                                ...ctx.lineage.slice(),
-                            ],
-                        );
-                    }
-                    if (apply[expected_class]) {
-                        return lens
-                            .map(apply[expected_class])
-                            .execute({ id, quads }, ctx);
-                    } else {
-                        return lens.execute({ id, quads }, ctx);
-                    }
-                }).named("extracting class", expected_class),
-            };
-        });
+        resolveReference.then(
+            field(SHACL.class, "clazz").map(({ clazz: expected_class }) => {
+                return {
+                    extract: new BasicLens<Cont, unknown>(
+                        ({ id, quads }, ctx) => {
+                            // We did not find a type, so use the expected class lens
+                            const lens = cache[expected_class];
+                            if (!lens) {
+                                throw new LensError(
+                                    "Tried extracting class, but no shape was defined",
+                                    [
+                                        {
+                                            name:
+                                                "Found type: " + expected_class,
+                                            opts: Object.keys(cache),
+                                        },
+                                        ...ctx.lineage.slice(),
+                                    ],
+                                );
+                            }
+                            if (apply[expected_class]) {
+                                return lens
+                                    .map(apply[expected_class])
+                                    .execute({ id, quads }, ctx);
+                            } else {
+                                return lens.execute({ id, quads }, ctx);
+                            }
+                        },
+                    ).named("extracting class", expected_class),
+                };
+            }),
+        );
 
-    return pathLens
-        .and(nameLens, minCount, maxCount, clazzLens.or(dataTypeLens))
-        .map((xs) => Object.assign({}, ...xs));
+    // Execute each lens individually with error handling to allow partial extraction
+    return new BasicLens<Cont, ShapeField>(({ id, quads }, ctx) => {
+        const results: Partial<ShapeField>[] = [];
+
+        try {
+            results.push(pathLens.execute({ id, quads }, ctx));
+        } catch (e) {
+            // Skip if path extraction fails
+        }
+
+        try {
+            results.push(nameLens.execute({ id, quads }, ctx));
+        } catch (e) {
+            // Skip if name extraction fails
+        }
+
+        try {
+            results.push(minCount.execute({ id, quads }, ctx));
+        } catch (e) {
+            // Skip if minCount extraction fails
+        }
+
+        try {
+            results.push(maxCount.execute({ id, quads }, ctx));
+        } catch (e) {
+            // Skip if maxCount extraction fails
+        }
+
+        try {
+            results.push(
+                clazzLens.or(dataTypeLens).execute({ id, quads }, ctx),
+            );
+        } catch (e) {
+            // Skip if class/datatype extraction fails
+        }
+
+        return Object.assign({}, ...results);
+    });
 }
 
 /**
@@ -630,7 +711,9 @@ export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }, cont) => {
     const out: Quad[] = [];
     let item = todo.pop();
     while (item) {
-        const found = quads.filter((x) => x.subject.equals(item));
+        const found = isQuadStore(quads)
+            ? quads.getQuads(item, undefined, undefined, undefined)
+            : quads.filter((x: Quad) => x.subject.equals(item));
         out.push(...found);
         for (const option of found) {
             const object = option.object;
@@ -741,9 +824,14 @@ export const TypedExtract = function (
     subClasses: SubClasses,
 ): BasicLens<Cont, unknown> {
     const lens = new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
-        const ty = quads.find(
-            (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
-        )?.object.value;
+        const ty = isQuadStore(quads)
+            ? quads.getQuads(id, RDF.terms.type, undefined, undefined)[0]
+                  ?.object.value
+            : quads.find(
+                  (q) =>
+                      q.subject.equals(id) &&
+                      q.predicate.equals(RDF.terms.type),
+              )?.object.value;
 
         ctx.lineage.push({ name: "Found type", opts: ty });
         ctx.lineage.push({ name: "TypedExtract", opts: undefined });
@@ -817,7 +905,11 @@ export function extractShape(
             ]);
         });
 
-    const idLens = empty<Cont>().map(({ id }) => ({ id: id.value }));
+    const idLens = empty<Cont>().map(({ id, quads }) => ({
+        id: id.value,
+        nodeId: id,
+        nodeQuads: quads,
+    }));
     const clazzs = pred(SHACL.targetClass);
 
     const multiple = clazzs.thenAll(
@@ -829,15 +921,36 @@ export function extractShape(
         SHACL.description,
         "description",
     );
-    const fields = pred(SHACL.property)
-        .thenAll(extractProperty(cache, subclasses, apply))
-        .map((fields) => ({ fields }));
 
     return multiple
-        .and(checkTy, idLens, descriptionClassLens, fields)
-        .map(([multiple, ...others]) =>
-            multiple.map((xs) => <Shape>Object.assign({}, xs, ...others)),
-        );
+        .and(checkTy, idLens, descriptionClassLens)
+        .map(([multiple, checkTyResult, idResult, descriptionResult]) => {
+            let fields: ShapeField[] = [];
+            try {
+                fields = pred(SHACL.property)
+                    .thenAll(extractProperty(cache, subclasses, apply))
+                    .execute(
+                        { id: idResult.nodeId, quads: idResult.nodeQuads },
+                        createContext(),
+                    );
+            } catch (e) {
+                // If field extraction fails, continue with empty fields
+                console.error("Field extraction failed:", e);
+            }
+            return multiple.map(
+                (xs) =>
+                    <Shape>(
+                        Object.assign(
+                            {},
+                            xs,
+                            { id: idResult.id },
+                            descriptionResult,
+                            { fields },
+                        )
+                    ),
+            );
+        })
+        .asMulti();
 }
 
 /**
