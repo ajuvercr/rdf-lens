@@ -137,6 +137,54 @@ Note: `sh:datatype` is used for literals, `sh:class` is used for objects.
 
 * `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
 * `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
+* `sh:defaultValue` tells rdf-lens what to use when the data has no value for this property. A default satisfies `sh:minCount`, so a required property with a default never fails to parse.
+
+**Default values** are extracted the same way the data would have been, but from the shapes graph:
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Me>;
+  sh:property [
+    sh:name "name";
+    sh:path <name>;
+    sh:datatype xsd:string;
+    sh:defaultValue "ajuvercr";   # A literal is converted with sh:datatype
+    sh:maxCount 1;
+    sh:minCount 1;
+  ], [
+    sh:name "age";
+    sh:path <age>;
+    sh:datatype xsd:integer;
+    sh:maxCount 1;
+    sh:minCount 1;
+  ].
+```
+
+```turtle
+<foobar> a <Me>;
+  <age> 95.
+```
+
+extracts to `{ "name": "ajuvercr", "age": 95 }`.
+
+For a `sh:class` property the default is a node, and it is extracted through that class's shape. Its own properties are read from the shapes graph, and whatever it leaves out falls back to the defaults of that shape in turn:
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Friend>;
+  sh:property [
+    sh:name "friend";
+    sh:path <friend>;
+    sh:class <Me>;
+    sh:defaultValue [ <age> 95 ];   # <name> comes from the Me shape default
+    sh:maxCount 1;
+    sh:minCount 1;
+  ].
+```
+
+`<foobar> a <Friend>.` extracts to `{ "friend": { "name": "ajuvercr", "age": 95 } }`. The same happens one level down: a friend that is present in the data but has no `<name>` still gets `"ajuvercr"`.
+
+For a property that holds multiple values, the default may be a single value or an RDF list, and it is only used when the data has no values at all.
 
 
 
