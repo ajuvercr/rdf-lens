@@ -10,7 +10,9 @@ import {
     LensContext,
     LensError,
     match,
+    matchQuads,
     pred,
+    Quads,
     subject,
     subjects,
     unique,
@@ -545,7 +547,10 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
         .thenAll(subject)
         .reduce(reduce, empty<Quad[]>());
 
-    return sliced<Quad>().then(actualReplace);
+    // A Quad[] is a valid Quads, but BasicLens is invariant in its input type,
+    // so widen it explicitly instead of casting the lens.
+    const widen = empty<Quad[]>().map<Quads>((quads) => quads);
+    return sliced<Quad>().then(widen).then(actualReplace);
 }
 
 /**
@@ -630,7 +635,7 @@ export const CBDLens = new BasicLensM<Cont, Quad>(({ id, quads }, cont) => {
     const out: Quad[] = [];
     let item = todo.pop();
     while (item) {
-        const found = quads.filter((x) => x.subject.equals(item));
+        const found = matchQuads(quads, item);
         out.push(...found);
         for (const option of found) {
             const object = option.object;
@@ -741,9 +746,7 @@ export const TypedExtract = function (
     subClasses: SubClasses,
 ): BasicLens<Cont, unknown> {
     const lens = new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
-        const ty = quads.find(
-            (q) => q.subject.equals(id) && q.predicate.equals(RDF.terms.type),
-        )?.object.value;
+        const ty = matchQuads(quads, id, RDF.terms.type)[0]?.object.value;
 
         ctx.lineage.push({ name: "Found type", opts: ty });
         ctx.lineage.push({ name: "TypedExtract", opts: undefined });
@@ -829,8 +832,11 @@ export function extractShape(
         SHACL.description,
         "description",
     );
+    // thenSome, not thenAll: a property shape that cannot be extracted (no
+    // sh:path, or neither sh:datatype nor sh:class) only drops that field,
+    // instead of taking the whole node shape down with it.
     const fields = pred(SHACL.property)
-        .thenAll(extractProperty(cache, subclasses, apply))
+        .thenSome(extractProperty(cache, subclasses, apply))
         .map((fields) => ({ fields }));
 
     return multiple
