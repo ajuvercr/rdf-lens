@@ -57,6 +57,7 @@ export const RDFL = createUriAndTermNamespace(
     "envKey",
     "envDefault",
     "datatype",
+    "Term",
 ) as Namespace<string[], string, string> & {
     terms: Namespace<string[], NamedNode, string>;
 };

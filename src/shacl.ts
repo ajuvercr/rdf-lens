@@ -454,6 +454,9 @@ function normalizeTerm(term: Term): Term {
  * reading it may well want a plain string:
  *
  *     sh:nodeKind sh:IRI; rdfl:datatype xsd:string;
+ *
+ * rdfl:datatype rdfl:Term asks for the term exactly as the parser produced it,
+ * where leaving rdfl:datatype out rebuilds it with this library's own factory.
  */
 function extractTerm(
     kindTerm?: Term,
@@ -488,9 +491,10 @@ function extractTerm(
                     ...ctx.lineage.slice(),
                 ]);
             }
-            return datatype
-                ? dataTypeToExtract(datatype, id)
-                : normalizeTerm(id);
+            if (!datatype) return normalizeTerm(id);
+            // The term untouched, quads and all, not a rebuilt copy of it
+            if (datatype.equals(RDFL.terms.Term)) return id;
+            return dataTypeToExtract(datatype, id);
         }),
     );
 }
@@ -645,6 +649,15 @@ function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
 }
 
 /**
+ * Whether dataTypeToExtract knows this datatype, asked by probing it: an
+ * unknown datatype returns the term it was handed, unchanged.
+ */
+function convertsValues(datatype: Term): boolean {
+    const probe = literal("");
+    return dataTypeToExtract(datatype, probe) !== probe;
+}
+
+/**
  * PropertyRef identifies a property shape in a warning, so it can be found back
  * in a shapes file that defines a few hundred of them.
  */
@@ -719,6 +732,13 @@ function detectTermForLiteralDatatype(
         datatype.equals(XSD.terms.custom("iri")) ||
         datatype.equals(XSD.terms.custom("anyURI"))
     ) {
+        return extract;
+    }
+
+    // A datatype rdf-lens has no conversion for hands back the term untouched,
+    // so there is no value conversion to report. rdfl:datatype rdfl:Term is
+    // how to ask for that on purpose.
+    if (!convertsValues(datatype)) {
         return extract;
     }
 

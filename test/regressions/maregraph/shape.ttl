@@ -117,7 +117,7 @@
     sh:path ( );
     sh:maxCount 1;
     sh:minCount 1;
-    sh:datatype xsd:any;
+    rdfl:datatype rdfl:Term;
   ], [
     sh:name "quads";
     sh:path ( );

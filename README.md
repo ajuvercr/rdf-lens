@@ -169,6 +169,8 @@ All six SHACL node kinds are supported: `sh:IRI`, `sh:BlankNode`, `sh:Literal`, 
 
 Either can be used on its own: `sh:nodeKind` alone hands you the term, `rdfl:datatype` alone converts whatever term is there without constraining it.
 
+`rdfl:datatype rdfl:Term` is the one value that converts nothing: it hands back the term object the parser produced, rather than rebuilding it with this library's data factory. Use it when identity matters, for instance when the extracted term is compared against terms from the same store.
+
 > [!WARNING]
 > `sh:datatype xsd:iri` is deprecated. There is no such datatype: `xsd:iri` was only ever rdf-lens's way of asking for the IRI itself, which is what `sh:nodeKind sh:IRI` means in SHACL. Shapes using it keep working and now log a deprecation warning naming the property, its path and its shape. The two extract the same `NamedNode`, so the change is a drop in replacement.
 >

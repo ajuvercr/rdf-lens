@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { Parser } from "n3";
+import { DataFactory } from "rdf-data-factory";
+import type { Term } from "@rdfjs/types";
 import { RDF } from "@treecg/types";
 import { extractShapes } from "../src/shacl";
+
+const { namedNode } = new DataFactory();
 
 const prefixes = `
 @prefix sh: <http://www.w3.org/ns/shacl#> .
@@ -423,5 +427,70 @@ describe("sh:datatype holding IRIs", () => {
 
         expect(warn).toHaveBeenCalledOnce();
         expect(warn.mock.calls[0][0]).toContain("deprecated");
+    });
+});
+
+describe("rdfl:datatype rdfl:Term", () => {
+    const data = "<foobar> a ex:Thing; ex:value ex:target.";
+
+    test("Hands back the term the parser produced, not a copy", () => {
+        const output = extractShapes(
+            parse(shapeWith("rdfl:datatype rdfl:Term;")),
+        );
+        const quads = parse(data);
+        const valueQuad = quads.find((q) =>
+            q.predicate.equals(namedNode("http://example.org/value")),
+        )!;
+
+        const object = <Record<string, unknown>>output.lenses[
+            "http://example.org/Thing"
+        ].execute({
+            id: quads[0].subject,
+            quads,
+        });
+
+        // Identity, not just equality: nothing was rebuilt on the way out
+        expect(object.value).toBe(valueQuad.object);
+    });
+
+    test("Extracts what sh:datatype xsd:any extracts today", () => {
+        const withTerm = extract(shapeWith("rdfl:datatype rdfl:Term;"), data);
+        const withAny = extract(shapeWith("sh:datatype xsd:any;"), data);
+
+        expect(withTerm).toEqual(withAny);
+    });
+
+    test("A datatype that converts nothing is not reported as a hijack", () => {
+        // "converts by value" would be a lie: an unknown datatype hands the
+        // term back untouched, which is what rdfl:Term asks for on purpose
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        extract(shapeWith("sh:datatype xsd:any;"), data);
+
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    test("Differs from a node kind on its own, which normalises", () => {
+        const raw = extract(shapeWith("rdfl:datatype rdfl:Term;"), data);
+        const normalised = extract(shapeWith("sh:nodeKind sh:IRI;"), data);
+
+        expect((<Term>raw.value).value).toBe((<Term>normalised.value).value);
+        expect(raw.value).not.toEqual(normalised.value);
+    });
+
+    test("A node kind is still enforced alongside it", () => {
+        let error = "";
+        try {
+            extract(
+                shapeWith("sh:nodeKind sh:IRI; rdfl:datatype rdfl:Term;"),
+                `
+<foobar> a ex:Thing; ex:value "not an iri".
+`,
+            );
+        } catch (e) {
+            error = String(e);
+        }
+
+        expect(error).toContain("Node kind violation");
     });
 });
