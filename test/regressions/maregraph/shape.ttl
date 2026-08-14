@@ -11,19 +11,22 @@
   sh:property [
     sh:name "stream";
     sh:path sds:stream;
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
     sh:name "payload";
     sh:path sds:payload;
-    sh:datatype xsd:string;
+    sh:nodeKind sh:BlankNodeOrIRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
     sh:name "buckets";
     sh:path sds:bucket;
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
   ], [
     sh:name "dataless";
     sh:path sds:dataless;
@@ -37,13 +40,15 @@
   sh:property [
     sh:name "id";
     sh:path ( );
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
     sh:name "streamId";
     sh:path sds:stream;
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
@@ -68,25 +73,29 @@
   sh:property [
     sh:name "type";
     sh:path sds:relationType;
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
     sh:name "stream";
     sh:path ( [ sh:inversePath sds:relation ] sds:stream );
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
     sh:name "origin";
     sh:path [ sh:inversePath sds:relation ];
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
     sh:name "bucket";
     sh:path sds:relationBucket;
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:minCount 1;
     sh:maxCount 1;
   ], [
@@ -108,7 +117,7 @@
     sh:path ( );
     sh:maxCount 1;
     sh:minCount 1;
-    sh:datatype xsd:any;
+    rdfl:datatype rdfl:Term;
   ], [
     sh:name "quads";
     sh:path ( );

@@ -426,12 +426,14 @@ ${prefixes}
 [] a sh:NodeShape;
   sh:targetClass js:Point;
   sh:property [
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:path [ sh:inversePath  js:x ];
     sh:name "x";
     sh:maxCount 1;
   ], [
-    sh:datatype xsd:string;
+    sh:nodeKind sh:IRI;
+    rdfl:datatype xsd:string;
     sh:path [ sh:inversePath  ( js:x js:y ) ];
     sh:name "y";
     sh:maxCount 1;
@@ -513,7 +515,7 @@ ${prefixes}
     sh:name "cbd";
     sh:maxCount 1;
   ], [
-    sh:datatype xsd:iri;
+    sh:nodeKind sh:IRI;
     sh:path ( );
     sh:name "id";
     sh:maxCount 1;

@@ -133,10 +133,48 @@ console.log(point); // { "x": 5, "y": 8 }
   ].
 ```
 
-Note: `sh:datatype` is used for literals, `sh:class` is used for objects.
+Note: `sh:datatype` is used for literals, `sh:class` is used for objects, and `sh:nodeKind` is used to take a term as it is.
 
 * `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
 * `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
+
+**Extracting terms** with `sh:nodeKind`. Not every value is a literal to convert or a nested object to build: sometimes the term itself is what you want, an IRI you are going to dereference or pass along. `sh:nodeKind` says which kind of term a property holds, and rdf-lens hands you that term.
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Document>;
+  sh:property [
+    sh:name "source";
+    sh:path <source>;
+    sh:nodeKind sh:IRI;   # `source` is a NamedNode, not a string
+    sh:maxCount 1;
+  ].
+```
+
+All six SHACL node kinds are supported: `sh:IRI`, `sh:BlankNode`, `sh:Literal`, `sh:BlankNodeOrIRI`, `sh:BlankNodeOrLiteral` and `sh:IRIOrLiteral`. A value whose term type the node kind does not allow fails to parse, the same way a cardinality violation does. If a property has both `sh:nodeKind` and `sh:datatype`, the datatype wins and the value is converted.
+
+**Terms as plain values** with `rdfl:datatype`. A property is often written as an IRI so the Turtle parser resolves it against the base, while the code reading it just wants a string. Those are two questions: `sh:nodeKind` says what is in the configuration, `rdfl:datatype` says what to turn it into.
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Document>;
+  sh:property [
+    sh:name "source";
+    sh:path <source>;
+    sh:nodeKind sh:IRI;        # written as <./data.ttl>, resolved by the parser
+    rdfl:datatype xsd:string;  # read as "file:///.../data.ttl"
+    sh:maxCount 1;
+  ].
+```
+
+Either can be used on its own: `sh:nodeKind` alone hands you the term, `rdfl:datatype` alone converts whatever term is there without constraining it.
+
+`rdfl:datatype rdfl:Term` is the one value that converts nothing: it hands back the term object the parser produced, rather than rebuilding it with this library's data factory. Use it when identity matters, for instance when the extracted term is compared against terms from the same store.
+
+> [!WARNING]
+> `sh:datatype xsd:iri` is deprecated. There is no such datatype: `xsd:iri` was only ever rdf-lens's way of asking for the IRI itself, which is what `sh:nodeKind sh:IRI` means in SHACL. Shapes using it keep working and now log a deprecation warning naming the property, its path and its shape. The two extract the same `NamedNode`, so the change is a drop in replacement.
+>
+> The other half of the same problem is quieter: a property declaring `sh:datatype xsd:string` converts *any* term by value, so it accepts IRIs and returns them as strings. Nothing in the shape says so, and a SHACL validator would reject the data against it. rdf-lens now reports those properties when it meets one, once per property, and the replacement is `sh:nodeKind sh:IRI` with `rdfl:datatype xsd:string` — again extracting the same value.
 
 
 
