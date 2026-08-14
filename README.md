@@ -149,310 +149,125 @@ Sometimes a plain old javascript objects is not enough, some special classes wor
 * `rdfl:Context`: Provides a reference to the list of all data quads.
 * `rdfl:TypeExtract`: Extracts according to the `rdf:type` object (including class hierarchy), by using the shape that corresponds to that type.
 
-## Indexed Store Performance
+## Indexed stores
 
-RDF-Lens supports indexed stores for O(1) query performance on large datasets. The `quads` field in containers can be either a `Quad[]` array or a `QuadStore` for indexed lookups. Lens operations like `match()`, `pred()`, and `invPred()` automatically detect and use indexed stores when available.
+Lenses walk quads by pattern: `pred()` looks for a subject and a predicate, `invPred()` for an object and a predicate, `match()` for any combination. Over a `Quad[]` every such step scans the whole array, so a lens that follows three hops over a large dataset scans it three times.
 
-### QuadStore Interface
+Instead of an array, the `quads` field of a container may hold anything with a `getQuads` method, and every lens will query it instead of scanning:
 
 ```typescript
 export interface QuadStore {
     getQuads(
-        subject: Term | undefined,
-        predicate: Term | undefined,
-        object: Term | undefined,
-        graph?: Term | undefined
+        subject: Term | null,
+        predicate: Term | null,
+        object: Term | null,
+        graph: Term | null,
     ): Quad[];
 }
 ```
 
-This matches the W3C RDF/JS DatasetCore interface, making it compatible with:
-- LVX Store (binary RDF format with pre-built indexes)
-- N3 Store (in-memory RDF store)
-- Any W3C RDF/JS compliant store
-
-### Usage with LVX Store
+This is the `getQuads` signature of [N3.Store](https://github.com/rdfjs/N3.js#storing), so an N3 store can be passed straight in:
 
 ```typescript
-import { LVXStore } from 'mdld-lvx';
-import { match, subjects, createContext } from 'rdf-lens';
+import { Store } from "n3";
+import { match, subject, unique, createContext } from "rdf-lens";
 
-const quads = mdldParse(dataMD).quads;
-const store = new LVXStore(quads, { buildIndexes: true });
+const store = new Store(quads);
 
-// Pass store directly to subjects() or match()
-const result = match(undefined, rdfType, userType)
+const people = match(undefined, rdfType, personType)
+    .thenAll(subject)
+    .then(unique())
     .execute(store, createContext());
 ```
 
-### Usage with N3 Store
+The same holds for a container built by hand, and for shape extraction:
 
 ```typescript
-import { Store } from 'n3';
-import { match, subjects, createContext } from 'rdf-lens';
-
-const store = new Store();
-store.addQuads(quads);
-
-// Pass store directly to subjects() or match()
-const result = match(undefined, rdfType, userType)
-    .execute(store, createContext());
+const person = shapes.lenses["http://example.org/Person"].execute(
+    { id: alice, quads: store },
+    createContext(),
+);
 ```
 
-### Performance Benefits
+Arrays keep working exactly as before, and both inputs return the same terms - `test/store.test.ts` asserts that per lens. What changes is the cost. On ~50K quads, `test/performance.test.ts` measures roughly:
 
-- **Linear scanning (Quad[]):** O(n) where n is number of quads
-- **Indexed store (QuadStore):** O(1) for pattern matching
-- **Typical improvement:** 30-400x faster for large datasets (>10K quads)
+| Query | `Quad[]` | store |
+| --- | --- | --- |
+| single `match` on `rdf:type` | 2.4ms | 0.4ms |
+| three hop `pred` chain | 20ms | 0.3ms |
+| `match` plus a `pred` filter per result | 127ms | 1.5ms |
 
-The `quads` field accepts both `Quad[]` and `QuadStore`, so existing code with arrays works unchanged. Pass a store when you need the performance boost.
+The gap widens with the dataset: a single lookup is a scan of every quad versus an index hit, so the more quads there are, the more a store pays off. Below a few thousand quads an array is fine, and building the index is itself work.
 
-## Chainable Functions Reference
+## API reference
 
-### Top-Level Functions
+### Building blocks
 
-**Traversal Functions:**
-- `match(subject, predicate, object)` - Matches quads by pattern (subject, predicate, object)
-- `pred(pred?)` - Traverse outgoing edges with optional predicate filter
-- `invPred(pred?)` - Traverse incoming edges with optional predicate filter
-- `predTriple(pred?)` - Return triple containers matching a subject/predicate
-- `subjects()` - Extract all subjects from quads into containers
+| | |
+| --- | --- |
+| `pred(predicate?)` | Follow outgoing edges, optionally filtered by predicate |
+| `invPred(predicate?)` | Follow incoming edges, optionally filtered by predicate |
+| `predTriple(predicate?)` | Like `pred`, but keeps the whole quad |
+| `match(subject, predicate, object)` | All quads matching a pattern, `undefined` is a wildcard |
+| `subjects()` | The subject of every quad |
+| `subject`, `predicate`, `object` | The corresponding term of a `Cont<Quad>` |
+| `unique()` | Deduplicate containers on term type and value |
+| `empty<C>()` | Identity lens, useful as a starting point |
+| `createContext()` | A fresh execution context, carries lineage for error messages |
+| `matchQuads(quads, s?, p?, o?)` | Pattern lookup used by the lenses above, on an array or a store |
 
-**Quad Accessors:**
-- `subject` - Lens returning the subject of a quad
-- `predicate` - Lens returning the predicate of a quad
-- `object` - Lens returning the object of a quad
+`pred`, `invPred`, `predTriple`, `match` and `subjects` return a `BasicLensM`, a lens that yields many results.
 
-**Utility Functions:**
-- `unique()` - Deduplicate containers by term type and value
-- `empty()` - Identity lens returning input unchanged
-- `createContext()` - Create a fresh context for lens execution
+### BasicLens&lt;C, T&gt;
 
-### BasicLens Methods (Single-Value Lenses)
+| | |
+| --- | --- |
+| `then(next)` | Feed the result into `next` |
+| `map(fn)` | Transform the result |
+| `and(...others)` | Run several lenses on the same input, results as a tuple |
+| `or(...others)` | First lens that does not throw; throws the collected errors if none succeed |
+| `orM(...others)` | Results of all lenses that did not throw, as a `BasicLensM` |
+| `safe(def)` | The result, or `def` if the lens throws |
+| `asMulti()` | Reinterpret a lens returning `T[]` as a `BasicLensM` |
+| `named(name, opts?)` | Label this step, so failures point at it |
+| `execute(input, ctx?)` | Run the lens |
 
-**Composition:**
-- `and(...and)` - Combine lenses, return tuple of results
-- `then(next)` - Chain this lens with another lens
-- `or(...others)` - Return first successful result from fallback lenses
-- `orM(...others)` - Aggregate results from multiple lenses ignoring failures
+### BasicLensM&lt;C, T&gt;
 
-**Transformation:**
-- `map(fn)` - Transform result with mapping function
-- `asMulti()` - Convert to multi-valued lens
+Extends `BasicLens<C, T[]>`, so everything above is available too.
 
-**Execution:**
-- `execute(container, ctx?)` - Execute lens with optional context
-- `named(name, opts?, cb?)` - Add lineage tracking for debugging
+| | |
+| --- | --- |
+| `one(def?)` | First result, or `def`; throws when empty and no default was given |
+| `expectOne()` | First result, throws when empty |
+| `thenAll(next)` | Apply `next` to every result, fails if any of them fails |
+| `thenSome(next)` | Apply `next` to every result, drop the ones that fail |
+| `thenFlat(next)` | Apply a multi valued `next` to every result and flatten |
+| `mapAll(fn)` | Transform every result |
+| `filter(fn)` | Keep the results matching `fn` |
+| `orAll(...others)` | All results of all lenses, ignoring the ones that throw |
+| `reduce(lens, start)` | Fold the results with an accumulator lens |
 
-### BasicLensM Methods (Multi-Value Lenses)
+### Chaining
 
-**Element Access:**
-- `one(def?)` - Return first element or default value
-- `expectOne()` - Return first element or throw if empty
-
-**Composition:**
-- `thenAll(next)` - Apply lens to each element
-- `thenSome(next)` - Apply lens to each element, ignore failures
-- `thenFlat(next)` - Apply multi-valued lens to each element and flatten
-- `orAll(...others)` - Combine results from multiple multi-lenses
-
-**Transformation:**
-- `mapAll(fn)` - Map function over all elements
-- `filter(fn)` - Filter result array by predicate
-- `reduce(lens, start)` - Reduce using accumulator lens
-
-**Execution:**
-- `named(name, opts?, cb?)` - Add lineage tracking for debugging
-
-## Chaining Rules and Type Compatibility
-
-### Core Principle
-Lenses can be chained based on **type compatibility** between the output type of one lens and the input type of the next. The chaining rules depend on whether you're working with single-valued (`BasicLens`) or multi-valued (`BasicLensM`) lenses.
-
-### Type Hierarchy
-```
-BasicLens<C, T>  (single-valued lens)
-    ↓ asMulti()
-BasicLensM<C, T>  (multi-valued lens, extends BasicLens<C, T[]>)
-```
-
-### Single-Valued Lens Chaining (BasicLens)
-
-**Output type:** `T` (single value)
-**Can chain to:** Any lens that accepts `T` as input
-
-**Valid sequences:**
-```typescript
-// BasicLens<C, T> → BasicLens<T, F>
-pred(predicate).then(anotherLens)
-
-// BasicLens<C, T> → BasicLens<C, F> (transformation)
-pred(predicate).map(fn)
-
-// BasicLens<C, T> → BasicLens<C, [T, F]> (combination)
-pred(p1).and(pred(p2))
-
-// BasicLens<C, T> → BasicLensM<C, T> (convert to multi)
-pred(predicate).asMulti()
-
-// BasicLens<C, T> → BasicLens<C, T> (fallback)
-pred(p1).or(pred(p2))
-
-// BasicLens<C, T> → BasicLensM<C, T> (aggregate, ignore failures)
-pred(p1).orM(pred(p2))
-```
-
-### Multi-Valued Lens Chaining (BasicLensM)
-
-**Output type:** `T[]` (array of values)
-**Can chain to:** Lenses that handle arrays or apply to each element
-
-**Valid sequences:**
-```typescript
-// BasicLensM<C, T> → BasicLensM<C, F> (apply to each element)
-pred(predicate).thenAll(extractLens)
-
-// BasicLensM<C, T> → BasicLensM<C, F> (apply to each, ignore failures)
-pred(predicate).thenSome(extractLens)
-
-// BasicLensM<C, T> → BasicLensM<C, F> (apply multi-valued lens, flatten)
-pred(predicate).thenFlat(anotherMultiLens)
-
-// BasicLensM<C, T> → BasicLensM<C, T> (filter elements)
-pred(predicate).filter(fn)
-
-// BasicLensM<C, T> → BasicLensM<C, F> (map over elements)
-pred(predicate).mapAll(fn)
-
-// BasicLensM<C, T> → BasicLensM<C, T> (combine multi-lenses)
-pred(p1).orAll(pred(p2))
-
-// BasicLensM<C, T> → BasicLens<C, T> (convert to single, get first)
-pred(predicate).one(defaultValue)
-
-// BasicLensM<C, T> → BasicLens<C, T> (convert to single, throw if empty)
-pred(predicate).expectOne()
-```
-
-### Container Type Compatibility
-
-**Cont<Q> = { id: Q; quads: Quad[] | QuadStore }**
-
-Functions that return `Cont` can chain to functions that accept `Cont`:
-- `pred()` → returns `Cont` → can chain to `pred()`, `invPred()`, `subject`, etc.
-- `invPred()` → returns `Cont` → can chain to `pred()`, `invPred()`, `subject`, etc.
-- `subject` → returns `Cont` → can chain to `pred()`, `invPred()`, etc.
-
-Functions that return `Cont<Quad>` can chain to quad accessors:
-- `match()` → returns `Cont<Quad>` → can chain to `subject`, `predicate`, `object`
-- `predTriple()` → returns `Cont<Quad>` → can chain to `subject`, `predicate`, `object`
-
-### Special Input Types
-
-**Array inputs (Quad[], Cont[]):**
-- `unique()` - accepts `Cont[]` → returns `Cont`
-- `subjects()` - accepts `Quad[]` → returns `Cont`
-- `match()` - accepts `Quad[]` → returns `Cont<Quad>`
-
-These must come **first** in a chain or be used with appropriate input:
-```typescript
-// Valid: start with array input
-subjects().execute(quads, ctx)
-
-// Valid: chain after conversion
-match().then(subject).execute(quads, ctx)
-
-// Invalid: unique() needs array input
-pred().unique()  // ERROR: unique() expects Cont[], not Cont
-```
-
-### Common Chaining Patterns
-
-**Pattern 1: Navigate and extract**
-```typescript
-pred(predicate)          // BasicLensM<Cont, Cont>
-  .one()                 // BasicLens<Cont, Cont>
-  .map(({ id }) => ...)  // BasicLens<Cont, Object>
-```
-
-**Pattern 2: Filter and transform**
-```typescript
-match(s, p, o)           // BasicLensM<Quad[], Cont<Quad>>
-  .then(subject)         // BasicLensM<Quad[], Cont>
-  .mapAll(fn)            // BasicLensM<Quad[], F>
-  .filter(predicate)     // BasicLensM<Quad[], F>
-```
-
-**Pattern 3: Combine results**
-```typescript
-pred(p1)                // BasicLensM<Cont, Cont>
-  .and(pred(p2))         // BasicLens<Cont, [Cont, Cont]>
-  .map(([a, b]) => ...)  // BasicLens<Cont, Object>
-```
-
-**Pattern 4: Multi-step navigation**
-```typescript
-pred(p1)                // BasicLensM<Cont, Cont>
-  .thenFlat(pred(p2))    // BasicLensM<Cont, Cont>
-  .thenFlat(pred(p3))    // BasicLensM<Cont, Cont>
-  .mapAll(fn)            // BasicLensM<Cont, F>
-```
-
-**Pattern 5: Deduplicate after navigation**
-```typescript
-pred(p1)                // BasicLensM<Cont, Cont>
-  .thenFlat(pred(p2))    // BasicLensM<Cont, Cont>
-  .asMulti()             // BasicLensM<Cont, Cont>
-  .then(unique())        // BasicLensM<Cont, Cont>
-```
-
-### SHACL-Specific Chaining
-
-**Path lenses return lenses:**
-- `ShaclPath` - returns `BasicLensM<Cont, Cont>` (can be used directly)
-- `ShaclSequencePath` - returns `BasicLens<Cont, BasicLensM<Cont, Cont>>` (execute to get lens)
-- `ShaclAlternativepath` - returns `BasicLens<Cont, BasicLensM<Cont, Cont>>` (execute to get lens)
-
-**Usage pattern:**
-```typescript
-pred(SHACL.path)        // BasicLensM<Cont, Cont>
-  .one()                 // BasicLens<Cont, Cont>
-  .then(ShaclPath)       // BasicLens<Cont, BasicLensM<Cont, Cont>>
-  .thenFlat(...)         // Use the returned lens
-```
-
-### Invalid Chaining Examples
+A lens is `BasicLens<C, T>`: it takes a `C` and produces a `T`. Two lenses chain with `then` when the first produces what the second consumes.
 
 ```typescript
-// ERROR: unique() needs Cont[] input
-pred().unique()
-
-// ERROR: subjects() needs Quad[] input
-pred().subjects()
-
-// ERROR: subject needs Cont<Quad> input
-pred().subject
-
-// ERROR: then() needs BasicLens<T, F>, not function
-pred().then(fn)
-
-// ERROR: thenAll() needs BasicLens<T, F>, not BasicLensM
-pred().thenAll(anotherMultiLens)  // Use thenFlat instead
+// Cont -> Cont[] -> Cont -> string
+pred(foaf.knows)      // BasicLensM<Cont, Cont>
+    .one()            // BasicLens<Cont, Cont>
+    .map(({ id }) => id.value);
 ```
 
-### Quick Reference
+Most lenses pass containers around, so they compose freely: `pred()`, `invPred()` and `unique()` all take a `Cont` and produce a `Cont`. `match()` and `predTriple()` produce a `Cont<Quad>` instead, which `subject`, `predicate` and `object` turn back into a `Cont`:
 
-| Current Type | Can Chain To | Method |
-|--------------|--------------|--------|
-| `BasicLens<C, T>` | `BasicLens<T, F>` | `then()` |
-| `BasicLens<C, T>` | `BasicLens<C, F>` | `map()` |
-| `BasicLens<C, T>` | `BasicLens<C, [T, ...]>` | `and()` |
-| `BasicLens<C, T>` | `BasicLensM<C, T>` | `asMulti()`, `orM()` |
-| `BasicLensM<C, T>` | `BasicLensM<C, F>` | `thenAll()`, `thenSome()`, `thenFlat()` |
-| `BasicLensM<C, T>` | `BasicLens<C, T>` | `one()`, `expectOne()` |
-| `BasicLensM<C, T>` | `BasicLensM<C, T>` | `mapAll()`, `filter()`, `orAll()` |
-| `Cont<Quad>` | `Cont` | `subject`, `predicate`, `object` |
-| `Cont` | `Cont` | `pred()`, `invPred()` |
-| `Quad[]` | `Cont` | `subjects()`, `match()` |
-| `Cont[]` | `Cont` | `unique()` |
+```typescript
+// Quads -> Cont<Quad>[] -> Cont[] -> Cont[]
+match(undefined, rdfType, personType)
+    .thenAll(subject)
+    .then(unique());
+```
 
+`match()` and `subjects()` take the quads themselves rather than a container, so they start a chain rather than continue one.
+
+Multi valued lenses chain per element: `thenAll` and `thenSome` apply a single valued lens to each result, `thenFlat` applies a multi valued one and flattens. `one()` and `expectOne()` go back to a single value.
