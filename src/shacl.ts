@@ -40,6 +40,12 @@ export interface ShapeField {
     minCount?: number;
     maxCount?: number;
     extract: BasicLens<Cont, unknown>;
+    /**
+     * The sh:defaultValue node, used when the data has no value for this field.
+     * It points into the shapes graph rather than the data, so extracting it
+     * reads the default's own properties (`sh:defaultValue [ ex:age 95 ]`).
+     */
+    defaultValue?: Cont;
 }
 
 /**
@@ -55,35 +61,52 @@ export interface Shape {
 function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
     const minCount = field.minCount || 0;
     const maxCount = field.maxCount || Number.MAX_SAFE_INTEGER;
-    if (maxCount < 2) {
-        return field.path.one(undefined).then(
-            new BasicLens((x, ctx) => {
-                if (x) {
-                    return field.extract.execute(x, ctx);
-                } else {
-                    if (minCount > 0) {
-                        throw new LensError(
-                            "Field is not defined and required",
-                            ctx.lineage.slice(),
-                        );
-                    } else {
-                        return x;
-                    }
-                }
-            }),
-        );
-    }
-    if (maxCount < 2) return field.path.one().then(field.extract);
 
     const thenListExtract = RdfList.and(empty<Cont>()).map(
         ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
     );
     const noListExtract = empty<Cont>().map((x) => [x]);
 
+    // The default is extracted like any other value, but from the container it
+    // was defined in: the shapes graph. So a literal goes through the same
+    // datatype conversion, and a node through the same class lens, picking up
+    // that shape's own defaults in turn.
+    const defaults = thenListExtract
+        .or(noListExtract)
+        .asMulti()
+        .thenAll(field.extract);
+    const extractDefault = (ctx: LensContext): unknown[] | undefined =>
+        field.defaultValue && defaults.execute(field.defaultValue, ctx);
+
+    if (maxCount < 2) {
+        return field.path.one(undefined).then(
+            new BasicLens((x, ctx) => {
+                if (x) {
+                    return field.extract.execute(x, ctx);
+                }
+
+                const def = extractDefault(ctx);
+                if (def && def.length > 0) {
+                    return def[0];
+                }
+
+                if (minCount > 0) {
+                    throw new LensError(
+                        "Field is not defined and required",
+                        ctx.lineage.slice(),
+                    );
+                } else {
+                    return x;
+                }
+            }),
+        );
+    }
+
     return field.path
         .thenFlat(thenListExtract.or(noListExtract).asMulti())
         .thenAll(field.extract)
         .map((x) => x.filter((x) => x !== undefined))
+        .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
         .map((xs, ctx) => {
             if (xs.length < minCount) {
                 throw new LensError("Mininum Count violation", [
@@ -579,6 +602,14 @@ function extractProperty(
     const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 
+    // Keep the container, not just the term: the default may be a node whose
+    // properties live in the shapes graph, and those quads travel with it.
+    const defaultValueLens: BasicLens<Cont, { defaultValue?: Cont }> = pred(
+        SHACL.defaultValue,
+    )
+        .one(undefined)
+        .map((defaultValue) => (defaultValue ? { defaultValue } : {}));
+
     const dataTypeLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
         pred(SHACL.datatype)
             .one()
@@ -616,7 +647,13 @@ function extractProperty(
         });
 
     return pathLens
-        .and(nameLens, minCount, maxCount, clazzLens.or(dataTypeLens))
+        .and(
+            nameLens,
+            minCount,
+            maxCount,
+            defaultValueLens,
+            clazzLens.or(dataTypeLens),
+        )
         .map((xs) => Object.assign({}, ...xs));
 }
 
