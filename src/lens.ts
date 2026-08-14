@@ -11,9 +11,10 @@ function termToString(term: Term): string {
 }
 
 /**
- * Interface for quad stores that provide indexed matching capabilities.
- * Enables O(1) lookups instead of linear scanning.
- * Matches W3C RDF/JS DatasetCore interface.
+ * Interface for indexed quad stores, matching the `getQuads` signature of
+ * `n3.Store` (and other stores following the RDF/JS `Store` convention).
+ * Looking up a pattern hits an index instead of scanning every quad, which
+ * matters once datasets grow beyond a couple of thousand quads.
  */
 export interface QuadStore {
     getQuads(
@@ -25,16 +26,44 @@ export interface QuadStore {
 }
 
 /**
- * Type alias for a container with an ID and quads (or store).
- * quads can be either a Quad[] array or a QuadStore for indexed lookups.
+ * The quads a lens operates on: either a plain array, scanned linearly, or a
+ * QuadStore, queried through its indexes.
  */
-export type Cont<Q = Term> = { id: Q; quads: Quad[] | QuadStore };
+export type Quads = Quad[] | QuadStore;
+
+/**
+ * Type alias for a container with an ID and quads.
+ */
+export type Cont<Q = Term> = { id: Q; quads: Quads };
 
 /**
  * Type guard to check if quads is a QuadStore.
  */
-export function isQuadStore(quads: Quad[] | QuadStore): quads is QuadStore {
+export function isQuadStore(quads: Quads): quads is QuadStore {
     return typeof (quads as QuadStore).getQuads === "function";
+}
+
+/**
+ * Finds all quads matching the given pattern, using the store indexes when
+ * quads is a QuadStore and a linear scan otherwise. Undefined parts of the
+ * pattern act as wildcards.
+ */
+export function matchQuads(
+    quads: Quads,
+    subject?: Term,
+    predicate?: Term,
+    object?: Term,
+): Quad[] {
+    if (isQuadStore(quads)) {
+        return quads.getQuads(subject, predicate, object, undefined);
+    }
+
+    return quads.filter(
+        (q) =>
+            (!subject || q.subject.equals(subject)) &&
+            (!predicate || q.predicate.equals(predicate)) &&
+            (!object || q.object.equals(object)),
+    );
 }
 
 export type Lineage = {
@@ -115,6 +144,16 @@ export class BasicLens<C, T> {
         });
     }
 
+    safe<O = undefined>(def: T): BasicLens<C, T | O> {
+        return new BasicLens((c, ctx) => {
+            try {
+                return this.execute(c, ctx);
+            } catch (_ex: unknown) {
+                return def;
+            }
+        });
+    }
+
     /**
      * Converts a lens returning an array into a multi-valued lens.
      * @returns Multi-valued lens for handling multiple results.
@@ -178,8 +217,8 @@ export class BasicLens<C, T> {
                 for (let i = 0; i < others.length; i++) {
                     try {
                         return others[i].execute(c, ctx.clone());
-                    } catch (_ex: unknown) {
-                        errors.push(ex);
+                    } catch (otherEx: unknown) {
+                        errors.push(otherEx);
                     }
                 }
             }
@@ -397,16 +436,8 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
  */
 export function pred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM<Cont, Cont>(({ quads, id }) => {
-        if (isQuadStore(quads)) {
-            const out = quads.getQuads(id, pred, undefined, undefined);
-            return out.map((q: Quad) => ({ quads, id: q.object }));
-        }
-
-        const out = (quads as Quad[]).filter(
-            (q: Quad) =>
-                q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
-        );
-        return out.map((q: Quad) => ({ quads, id: q.object }));
+        const out = matchQuads(quads, id, pred, undefined);
+        return out.map((q) => ({ quads, id: q.object }));
     }).named("pred", pred && termToString(pred));
 }
 
@@ -417,16 +448,8 @@ export function pred(pred?: Term): BasicLensM<Cont, Cont> {
  */
 export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM<Cont, Cont>(({ quads, id }) => {
-        if (isQuadStore(quads)) {
-            const out = quads.getQuads(undefined, pred, id, undefined);
-            return out.map((q: Quad) => ({ quads, id: q.subject }));
-        }
-
-        const out = (quads as Quad[]).filter(
-            (q: Quad) =>
-                q.object.equals(id) && (!pred || q.predicate.equals(pred)),
-        );
-        return out.map((q: Quad) => ({ quads, id: q.subject }));
+        const out = matchQuads(quads, undefined, pred, id);
+        return out.map((q) => ({ quads, id: q.subject }));
     }).named("invPred", pred && termToString(pred));
 }
 
@@ -437,16 +460,8 @@ export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
  */
 export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
     return new BasicLensM<Cont, Cont<Quad>>(({ quads, id }) => {
-        if (isQuadStore(quads)) {
-            const out = quads.getQuads(id, pred, undefined, undefined);
-            return out.map((q: Quad) => ({ quads, id: q }));
-        }
-
-        const out = (quads as Quad[]).filter(
-            (q: Quad) =>
-                q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
-        );
-        return out.map((q: Quad) => ({ quads, id: q }));
+        const out = matchQuads(quads, id, pred, undefined);
+        return out.map((q) => ({ quads, id: q }));
     }).named("predTriple");
 }
 
@@ -477,42 +492,9 @@ export function unique(): BasicLensM<Cont[], Cont> {
  * Extracts all subjects from a set of quads into Cont containers.
  * @returns Multi-valued lens over unique subjects.
  */
-export function subjects(): BasicLensM<Quad[] | QuadStore, Cont> {
-    return new BasicLensM<Quad[] | QuadStore, Cont>((quads) => {
-        // Check if quads is a store
-        if (isQuadStore(quads)) {
-            const store = quads;
-            // Use store for efficient subject extraction
-            const allQuads = store.getQuads(
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-            );
-            const uniqueSubjects = new Map();
-            allQuads.forEach((q: Quad) => {
-                if (!uniqueSubjects.has(q.subject.value)) {
-                    uniqueSubjects.set(q.subject.value, q.subject);
-                }
-            });
-            return Array.from(uniqueSubjects.values()).map((subject) => ({
-                id: subject,
-                quads: store,
-            }));
-        }
-
-        // Standard array processing - preserve full quad array for each subject
-        // This is necessary for IRI-referenced PropertyShapes to be found
-        const uniqueSubjects = new Map();
-        (quads as Quad[]).forEach((q: Quad) => {
-            if (!uniqueSubjects.has(q.subject.value)) {
-                uniqueSubjects.set(q.subject.value, q.subject);
-            }
-        });
-        return Array.from(uniqueSubjects.values()).map((subject) => ({
-            id: subject,
-            quads,
-        }));
+export function subjects(): BasicLensM<Quads, Cont> {
+    return new BasicLensM<Quads, Cont>((quads) => {
+        return matchQuads(quads).map((x) => ({ id: x.subject, quads }));
     }).named("subjects");
 }
 
@@ -527,29 +509,12 @@ export function match(
     subject: Term | undefined,
     predicate: Term | undefined,
     object: Term | undefined,
-): BasicLensM<Quad[] | QuadStore, Cont<Quad>> {
-    return new BasicLensM<Quad[] | QuadStore, Cont<Quad>>((quads) => {
-        // Check if quads is a store
-        if (isQuadStore(quads)) {
-            const store = quads;
-            const results = store.getQuads(
-                subject,
-                predicate,
-                object,
-                undefined,
-            );
-            return results.map((id: Quad) => ({ id, quads: store }));
-        }
-
-        // Standard linear filtering
-        return (quads as Quad[])
-            .filter(
-                (x: Quad) =>
-                    (!subject || x.subject.equals(subject)) &&
-                    (!predicate || x.predicate.equals(predicate)) &&
-                    (!object || x.object.equals(object)),
-            )
-            .map((id: Quad) => ({ id, quads }));
+): BasicLensM<Quads, Cont<Quad>> {
+    return new BasicLensM<Quads, Cont<Quad>>((quads) => {
+        return matchQuads(quads, subject, predicate, object).map((id) => ({
+            id,
+            quads,
+        }));
     }).named("match", {
         subject: subject && termToString(subject),
         predicate: predicate && termToString(predicate),
