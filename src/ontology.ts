@@ -37,6 +37,14 @@ export const SHACL = createTermNamespace(
     "minCount",
     "maxCount",
     "datatype",
+    // Node kinds
+    "nodeKind",
+    "IRI",
+    "BlankNode",
+    "Literal",
+    "BlankNodeOrIRI",
+    "BlankNodeOrLiteral",
+    "IRIOrLiteral",
 ) as Namespace<string[], NamedNode, string>;
 
 export const RDFL = createUriAndTermNamespace(

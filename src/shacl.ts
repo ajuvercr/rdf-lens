@@ -19,7 +19,7 @@ import {
 import { DataFactory, NamedNode } from "rdf-data-factory";
 import { RDFL, RDFS, SHACL } from "./ontology";
 
-const { literal, quad } = new DataFactory();
+const { blankNode, literal, namedNode, quad } = new DataFactory();
 
 function termToString(term: Term): string {
     if (term.termType === "NamedNode") {
@@ -409,6 +409,93 @@ function dataTypeToExtract(dataType: Term, t: Term): unknown {
 }
 
 /**
+ * The term types each sh:nodeKind accepts, and the datatype an environment
+ * variable is resolved with for that kind.
+ */
+const NODE_KINDS: {
+    kind: Term;
+    termTypes: string[];
+    envDatatype?: Term;
+}[] = [
+    {
+        kind: SHACL.IRI,
+        termTypes: ["NamedNode"],
+        envDatatype: XSD.terms.custom("iri"),
+    },
+    { kind: SHACL.BlankNode, termTypes: ["BlankNode"] },
+    { kind: SHACL.Literal, termTypes: ["Literal"] },
+    { kind: SHACL.BlankNodeOrIRI, termTypes: ["BlankNode", "NamedNode"] },
+    { kind: SHACL.BlankNodeOrLiteral, termTypes: ["BlankNode", "Literal"] },
+    { kind: SHACL.IRIOrLiteral, termTypes: ["NamedNode", "Literal"] },
+];
+
+/**
+ * Rebuilds a term with the same data factory the rest of rdf-lens uses, so
+ * extracted terms have the same shape no matter which parser produced them.
+ */
+function normalizeTerm(term: Term): Term {
+    if (term.termType === "NamedNode") return namedNode(term.value);
+    if (term.termType === "BlankNode") return blankNode(term.value);
+    if (term.termType === "Literal") {
+        return literal(term.value, term.language || term.datatype);
+    }
+
+    return term;
+}
+
+/**
+ * extractTerm creates a lens over the term at the path itself, rather than over
+ * a nested object. sh:nodeKind constrains which kind of term is allowed, and
+ * rdfl:datatype says what to turn it into; both are optional, but a property
+ * that gives neither has nothing to extract.
+ *
+ * The two are separate on purpose. A property configured with relative IRIs
+ * needs to be an IRI so the parser resolves it against the base, while the code
+ * reading it may well want a plain string:
+ *
+ *     sh:nodeKind sh:IRI; rdfl:datatype xsd:string;
+ */
+function extractTerm(
+    kindTerm?: Term,
+    datatype?: Term,
+): BasicLens<Cont, unknown> {
+    const kind = kindTerm && NODE_KINDS.find((x) => kindTerm.equals(x.kind));
+
+    // An unknown node kind is reported when the field is extracted, not while
+    // the shape is read: a property that fails to parse takes its whole node
+    // shape with it, and a typo would then leave nothing to point at.
+    if (kindTerm && !kind) {
+        return new BasicLens<Cont, unknown>((_c, ctx) => {
+            throw new LensError("Unknown sh:nodeKind", [
+                { name: "found", opts: termToString(kindTerm) },
+                {
+                    name: "expected one of",
+                    opts: NODE_KINDS.map((x) => termToString(x.kind)),
+                },
+                ...ctx.lineage.slice(),
+            ]);
+        });
+    }
+
+    return envLens(datatype || kind?.envDatatype).or(
+        empty<Cont>().map(({ id }, ctx) => {
+            if (kind && !kind.termTypes.includes(id.termType)) {
+                throw new LensError("Node kind violation", [
+                    {
+                        name: "expected " + termToString(kind.kind),
+                        opts: "found " + id.termType,
+                    },
+                    ...ctx.lineage.slice(),
+                ]);
+            }
+            return datatype
+                ? dataTypeToExtract(datatype, id)
+                : normalizeTerm(id);
+        }),
+    );
+}
+
+/**
  * Cache is a mapping of class IRIs to their extraction lenses
  */
 type Cache = {
@@ -558,6 +645,103 @@ function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
 }
 
 /**
+ * PropertyRef identifies a property shape in a warning, so it can be found back
+ * in a shapes file that defines a few hundred of them.
+ */
+type PropertyRef = {
+    name?: Term;
+    path?: Term;
+    targetClass?: Term;
+};
+
+/**
+ * Well known namespaces, shortened so a warning reads like the shape does.
+ */
+const WARNING_PREFIXES: [string, string][] = [
+    ["http://www.w3.org/2001/XMLSchema#", "xsd:"],
+    ["http://www.w3.org/ns/shacl#", "sh:"],
+    ["https://w3id.org/rdf-lens/ontology#", "rdfl:"],
+];
+
+function shortTerm(term: Term): string {
+    for (const [namespace, prefix] of WARNING_PREFIXES) {
+        if (term.termType === "NamedNode" && term.value.startsWith(namespace)) {
+            return prefix + term.value.slice(namespace.length);
+        }
+    }
+
+    return termToString(term);
+}
+
+function describeProperty(ref: PropertyRef): string {
+    const where = [
+        ref.path && "path " + termToString(ref.path),
+        ref.targetClass && "shape " + termToString(ref.targetClass),
+    ].filter((x) => x);
+
+    return [
+        ref.name ? "property " + JSON.stringify(ref.name.value) : "a property",
+        where.length > 0 ? ` (${where.join(", ")})` : "",
+    ].join("");
+}
+
+/**
+ * xsd:iri is not a datatype, it is a term type, and rdf-lens only ever
+ * supported it as a way to ask for the IRI itself. sh:nodeKind sh:IRI says the
+ * same thing in SHACL, so warn for every property shape that still uses it.
+ * The warning is raised while the shape is read, not per extracted value.
+ */
+function warnDeprecatedDatatype(datatype: Term, ref: PropertyRef) {
+    if (!datatype.equals(XSD.terms.custom("iri"))) return;
+
+    console.warn(
+        `rdf-lens: ${describeProperty(ref)} uses sh:datatype xsd:iri, which ` +
+            "is deprecated: use sh:nodeKind sh:IRI instead. It extracts the " +
+            "same term, and keeps working for now.",
+    );
+}
+
+/**
+ * A literal datatype converts whatever term it is handed, so a property
+ * declaring sh:datatype xsd:string happily accepts IRIs and returns their
+ * value. That is how shapes end up describing configuration that resolves
+ * relative IRIs while claiming to hold strings, and nothing in the shape gives
+ * it away - only the data does. Wraps a leaf extraction to report it, once per
+ * property shape rather than once per value.
+ */
+function detectTermForLiteralDatatype(
+    datatype: Term,
+    ref: PropertyRef,
+    extract: BasicLens<Cont, unknown>,
+): BasicLens<Cont, unknown> {
+    // xsd:iri has its own deprecation, and anyURI is about IRIs by intent
+    if (
+        datatype.equals(XSD.terms.custom("iri")) ||
+        datatype.equals(XSD.terms.custom("anyURI"))
+    ) {
+        return extract;
+    }
+
+    let warned = false;
+    return new BasicLens<Cont, unknown>((c, ctx) => {
+        // Only named nodes: a blank node here is an rdfl:EnvVariable
+        if (!warned && c.id.termType === "NamedNode") {
+            warned = true;
+            const dt = shortTerm(datatype);
+            console.warn(
+                `rdf-lens: ${describeProperty(ref)} declares sh:datatype ` +
+                    `${dt} but was given the IRI ${termToString(c.id)}, ` +
+                    "which it converts by value. Say that with " +
+                    `sh:nodeKind sh:IRI and rdfl:datatype ${dt}, the ` +
+                    "extracted value stays the same.",
+            );
+        }
+
+        return extract.execute(c, ctx);
+    });
+}
+
+/**
  * extractProperty extracts a ShapeField from a SHACL property definition, handling path, name, min/max count, datatype/class, and extraction lens.
  * Throws if a required class extraction lens is missing.
  */
@@ -579,12 +763,54 @@ function extractProperty(
     const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 
+    // Which property a warning is about. The target class comes from the node
+    // shape holding this property, so a warning points at a shape and not only
+    // at a path that a dozen shapes may share.
+    const propertyRef: BasicLens<Cont, PropertyRef> = pred(SHACL.name)
+        .one(undefined)
+        .and(
+            pred(SHACL.path).one(undefined),
+            invPred(SHACL.property)
+                .thenFlat(pred(SHACL.targetClass))
+                .one(undefined),
+        )
+        .map(([name, path, targetClass]) => ({
+            name: name?.id,
+            path: path?.id,
+            targetClass: targetClass?.id,
+        }));
+
     const dataTypeLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
         pred(SHACL.datatype)
             .one()
-            .map(({ id }) => ({
-                extract: extractLeaf(id),
-            }));
+            .and(propertyRef)
+            .map(([{ id }, ref]) => {
+                warnDeprecatedDatatype(id, ref);
+                return {
+                    extract: detectTermForLiteralDatatype(
+                        id,
+                        ref,
+                        extractLeaf(id),
+                    ),
+                };
+            });
+
+    // sh:nodeKind constrains the term, rdfl:datatype converts it, either alone
+    // is enough to know what to extract
+    const termLens: BasicLens<Cont, { extract: ShapeField["extract"] }> = pred(
+        SHACL.nodeKind,
+    )
+        .one(undefined)
+        .and(pred(RDFL.terms.datatype).one(undefined))
+        .map(([kind, datatype], ctx) => {
+            if (!kind && !datatype) {
+                throw new LensError(
+                    "Expected sh:nodeKind or rdfl:datatype, found neither",
+                    ctx.lineage.slice(),
+                );
+            }
+            return { extract: extractTerm(kind?.id, datatype?.id) };
+        });
 
     const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
         field(SHACL.class, "clazz").map(({ clazz: expected_class }) => {
@@ -615,8 +841,15 @@ function extractProperty(
             };
         });
 
+    // sh:datatype takes precedence over sh:nodeKind: a property carrying both
+    // (`sh:nodeKind sh:Literal; sh:datatype xsd:integer`) still converts.
     return pathLens
-        .and(nameLens, minCount, maxCount, clazzLens.or(dataTypeLens))
+        .and(
+            nameLens,
+            minCount,
+            maxCount,
+            clazzLens.or(dataTypeLens).or(termLens),
+        )
         .map((xs) => Object.assign({}, ...xs));
 }
 
