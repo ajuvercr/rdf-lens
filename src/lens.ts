@@ -18,10 +18,10 @@ function termToString(term: Term): string {
  */
 export interface QuadStore {
     getQuads(
-        subject: Term | undefined,
-        predicate: Term | undefined,
-        object: Term | undefined,
-        graph?: Term | undefined,
+        subject: Term | null,
+        predicate: Term | null,
+        object: Term | null,
+        graph: Term | null,
     ): Quad[];
 }
 
@@ -55,7 +55,12 @@ export function matchQuads(
     object?: Term,
 ): Quad[] {
     if (isQuadStore(quads)) {
-        return quads.getQuads(subject, predicate, object, undefined);
+        return quads.getQuads(
+            subject ?? null,
+            predicate ?? null,
+            object ?? null,
+            null,
+        );
     }
 
     return quads.filter(
