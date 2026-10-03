@@ -19,7 +19,7 @@ import {
 import { DataFactory, NamedNode } from "rdf-data-factory";
 import { RDFL, RDFS, SHACL } from "./ontology";
 
-const { literal, quad } = new DataFactory();
+const { blankNode, literal, namedNode, quad } = new DataFactory();
 
 function termToString(term: Term): string {
     if (term.termType === "NamedNode") {
@@ -85,19 +85,17 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
                     return field.extract.execute(x, ctx);
                 }
 
-                const def = extractDefault(ctx);
-                if (def && def.length > 0) {
-                    return def[0];
-                }
-
+                // A default does not stand in for missing data: a required
+                // field is still required to be in the data graph.
                 if (minCount > 0) {
                     throw new LensError(
                         "Field is not defined and required",
                         ctx.lineage.slice(),
                     );
-                } else {
-                    return x;
                 }
+
+                const def = extractDefault(ctx);
+                return def && def.length > 0 ? def[0] : x;
             }),
         );
     }
@@ -106,7 +104,6 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
         .thenFlat(thenListExtract.or(noListExtract).asMulti())
         .thenAll(field.extract)
         .map((x) => x.filter((x) => x !== undefined))
-        .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
         .map((xs, ctx) => {
             if (xs.length < minCount) {
                 throw new LensError("Mininum Count violation", [
@@ -114,6 +111,10 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
                     ...ctx.lineage.slice(),
                 ]);
             }
+            return xs;
+        })
+        .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
+        .map((xs, ctx) => {
             if (xs.length > maxCount) {
                 throw new LensError("Maximum Count violation", [
                     { name: "found: " + xs.length, opts: [] },
@@ -432,6 +433,119 @@ function dataTypeToExtract(dataType: Term, t: Term): unknown {
 }
 
 /**
+ * The term types each sh:nodeKind accepts.
+ */
+const NODE_KINDS: [Term, string[]][] = [
+    [SHACL.IRI, ["NamedNode"]],
+    [SHACL.BlankNode, ["BlankNode"]],
+    [SHACL.Literal, ["Literal"]],
+    [SHACL.BlankNodeOrIRI, ["BlankNode", "NamedNode"]],
+    [SHACL.BlankNodeOrLiteral, ["BlankNode", "Literal"]],
+    [SHACL.IRIOrLiteral, ["NamedNode", "Literal"]],
+];
+
+/**
+ * Rebuilds a term with this library's data factory, whichever parser made it.
+ */
+function normalizeTerm(term: Term): Term {
+    if (term.termType === "NamedNode") return namedNode(term.value);
+    if (term.termType === "BlankNode") return blankNode(term.value);
+    if (term.termType !== "Literal") return term;
+    if (!term.language) return literal(term.value, term.datatype);
+    return literal(term.value, {
+        language: term.language,
+        direction: term.direction || undefined,
+    });
+}
+
+const ABSOLUTE_IRI = /^[a-z][a-z0-9+.-]*:\S+$/i;
+
+/**
+ * extractTerm extracts the term at the path itself. sh:nodeKind constrains its
+ * term type, the code type converts it: an xsd datatype converts the value,
+ * xsd:anyURI makes an IRI of an IRI or an absolute IRI string, rdfl:Term keeps
+ * the parsed term as is, and none rebuilds it with this library's factory. An
+ * environment variable holds a string, so it becomes an absolute IRI or a
+ * literal, as the kind allows. inspect sees every term from the data before it is converted.
+ */
+function extractTerm(
+    kindTerm?: Term,
+    codeType?: Term,
+    inspect?: (term: Term) => void,
+): BasicLens<Cont, unknown> {
+    const kind = kindTerm && NODE_KINDS.find(([k]) => kindTerm.equals(k));
+    const allows = (termType: string) => !kind || kind[1].includes(termType);
+    const env = envValue();
+
+    return new BasicLens<Cont, unknown>((c, ctx) => {
+        // Thrown here, not while reading the shape: that would drop the whole
+        // node shape, leaving nothing to point at the typo
+        if (kindTerm && !kind) {
+            throw new LensError("Unknown sh:nodeKind", [
+                { name: "found", opts: termToString(kindTerm) },
+                {
+                    name: "expected one of",
+                    opts: NODE_KINDS.map(([k]) => termToString(k)),
+                },
+                ...ctx.lineage.slice(),
+            ]);
+        }
+        // A code type is a datatype: node kinds describe the data, and xsd:iri
+        // does not exist, xsd:anyURI is the datatype for IRIs
+        if (
+            codeType &&
+            (codeType.equals(XSD.terms.custom("iri")) ||
+                NODE_KINDS.some(([k]) => codeType.equals(k)))
+        ) {
+            throw new LensError("Unsupported rdfl:codeType, use xsd:anyURI", [
+                { name: "found", opts: termToString(codeType) },
+                ...ctx.lineage.slice(),
+            ]);
+        }
+        const violation = (found: string) =>
+            new LensError("Node kind violation", [
+                { name: "expected " + termToString(kindTerm!), opts: found },
+                ...ctx.lineage.slice(),
+            ]);
+
+        let term = c.id;
+        let convert = codeType;
+        if (isEnvVariable(c)) {
+            const { value, dt } = env.execute(c, ctx);
+            if (kind && allows("NamedNode") && ABSOLUTE_IRI.test(value)) {
+                term = namedNode(value);
+            } else if (allows("Literal")) {
+                term = literal(value);
+            } else {
+                throw violation(
+                    "found environment value " + JSON.stringify(value),
+                );
+            }
+            convert = codeType || dt;
+        } else if (!allows(term.termType)) {
+            throw violation("found " + term.termType);
+        } else if (convert && !convert.equals(RDFL.terms.Term)) {
+            inspect?.(term);
+        }
+
+        if (!convert) return normalizeTerm(term);
+        // The term untouched, quads and all, not a rebuilt copy of it
+        if (convert.equals(RDFL.terms.Term)) return term;
+        if (convert.equals(XSD.terms.custom("anyURI"))) {
+            if (term.termType === "NamedNode") return normalizeTerm(term);
+            if (term.termType === "Literal" && ABSOLUTE_IRI.test(term.value)) {
+                return namedNode(term.value);
+            }
+            throw new LensError("Expected an IRI", [
+                { name: "found", opts: termToString(term) },
+                ...ctx.lineage.slice(),
+            ]);
+        }
+        return dataTypeToExtract(convert, term);
+    });
+}
+
+/**
  * Cache is a mapping of class IRIs to their extraction lenses
  */
 type Cache = {
@@ -446,10 +560,23 @@ type SubClasses = {
 };
 
 /**
- * envLens extracts environment variables from RDF nodes of type EnvVariable, with optional default and datatype conversion.
+ * isEnvVariable tells whether a node is typed rdfl:EnvVariable.
+ */
+function isEnvVariable({ id, quads }: Cont): boolean {
+    return quads.some(
+        (q) =>
+            q.subject.equals(id) &&
+            q.predicate.equals(RDF.terms.type) &&
+            q.object.equals(RDFL.terms.EnvVariable),
+    );
+}
+
+/**
+ * envValue resolves an rdfl:EnvVariable node to the string it holds, together
+ * with the rdfl:datatype the node itself asks for, if any.
  * Throws if variable is missing and no default is set.
  */
-function envLens(dataType?: Term): BasicLens<Cont, unknown> {
+function envValue(): BasicLens<Cont, { value: string; dt?: Term }> {
     const checkType = pred(RDF.terms.type)
         .thenSome(
             new BasicLens(({ id }, ctx) => {
@@ -482,12 +609,11 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
 
     return checkType
         .and(envName, defaultValue, envDatatype)
-        .map(([_, { key }, { defaultValue }, { dt }], ctx) => {
+        .map(([, { key }, { defaultValue }, { dt }], ctx) => {
             const value = process.env[key] || defaultValue;
-            const thisDt = dataType || dt || XSD.terms.custom("literal");
 
             if (value) {
-                return dataTypeToExtract(thisDt, literal(value));
+                return { value, dt };
             } else {
                 throw new LensError("ENV and default are not set", [
                     { name: "Env Key", opts: key },
@@ -495,6 +621,19 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
                 ]);
             }
         });
+}
+
+/**
+ * envLens extracts environment variables from RDF nodes of type EnvVariable, with optional default and datatype conversion.
+ * Throws if variable is missing and no default is set.
+ */
+function envLens(dataType?: Term): BasicLens<Cont, unknown> {
+    return envValue().map(({ value, dt }) =>
+        dataTypeToExtract(
+            dataType || dt || XSD.terms.custom("literal"),
+            literal(value),
+        ),
+    );
 }
 
 /**
@@ -572,12 +711,82 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
 }
 
 /**
- * extractLeaf creates a lens that extracts a leaf value from a node, using envLens if available, otherwise converting by datatype.
+ * extractLeaf creates a lens that extracts a leaf value from a node, resolving it as an environment variable when it is one, otherwise converting by datatype.
+ * inspect is handed every term from the data before it is converted.
  */
-function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
-    return envLens(datatype).or(
-        empty<Cont>().map((item) => dataTypeToExtract(datatype, item.id)),
-    );
+function extractLeaf(
+    datatype: Term,
+    inspect?: (term: Term) => void,
+): BasicLens<Cont, unknown> {
+    const env = envLens(datatype);
+    return new BasicLens<Cont, unknown>((c, ctx) => {
+        if (isEnvVariable(c)) return env.execute(c, ctx);
+        inspect?.(c.id);
+        return dataTypeToExtract(datatype, c.id);
+    });
+}
+
+const PREFIXES: [string, string][] = [
+    ["http://www.w3.org/2001/XMLSchema#", "xsd:"],
+    ["http://www.w3.org/ns/shacl#", "sh:"],
+    [RDFL.custom(""), "rdfl:"],
+];
+
+function shortTerm(term: Term): string {
+    const prefix = PREFIXES.find(([ns]) => term.value.startsWith(ns));
+    return prefix
+        ? prefix[1] + term.value.slice(prefix[0].length)
+        : termToString(term);
+}
+
+/**
+ * checkDatatype reports a property using sh:datatype for more than literals:
+ * the deprecated xsd:iri right away, and a converting datatype such as
+ * xsd:string the first time it is handed an IRI or blank node, which belongs
+ * in sh:nodeKind with rdfl:codeType. Returns that check, to run per term.
+ */
+function checkDatatype(
+    datatype: Term,
+    where: string,
+    hasNodeKind: boolean,
+): ((term: Term) => void) | undefined {
+    if (datatype.equals(XSD.terms.custom("iri"))) {
+        console.warn(
+            `rdf-lens: ${where} uses sh:datatype xsd:iri, which is deprecated: ` +
+                "use sh:nodeKind sh:IRI instead, it extracts the same term.",
+        );
+        return;
+    }
+
+    // anyURI is about IRIs by intent, and a datatype rdf-lens does not convert
+    // hands the term back as is, which rdfl:codeType rdfl:Term asks for
+    const probe = literal("");
+    if (
+        datatype.equals(XSD.terms.custom("anyURI")) ||
+        dataTypeToExtract(datatype, probe) === probe
+    ) {
+        return;
+    }
+
+    const dt = shortTerm(datatype);
+    let warned = false;
+    return (term) => {
+        if (warned || term.termType === "Literal") return;
+        warned = true;
+
+        const iri = term.termType === "NamedNode";
+        const fix = hasNodeKind
+            ? `Use rdfl:codeType ${dt} instead of sh:datatype ${dt}, ` +
+              "sh:datatype only describes literals"
+            : `Use sh:nodeKind ${iri ? "sh:IRI" : "sh:BlankNode"} (or ` +
+              `${iri ? "sh:IRIOrLiteral" : "sh:BlankNodeOrLiteral"} if ` +
+              `literals are allowed too) and rdfl:codeType ${dt}`;
+        console.warn(
+            `rdf-lens: ${where} declares sh:datatype ${dt} but was given ` +
+                `${iri ? "the IRI " + termToString(term) : "a blank node"}, ` +
+                `which it converts by value. ${fix}, the value stays the same.`,
+        );
+    };
 }
 
 /**
@@ -610,12 +819,69 @@ function extractProperty(
         .one(undefined)
         .map((defaultValue) => (defaultValue ? { defaultValue } : {}));
 
+    // Names the property in warnings, with the target class of its node shape
+    // as a path alone may be shared by many shapes
+    const where: BasicLens<Cont, string> = pred(SHACL.custom("codeIdentifier"))
+        .one(undefined)
+        .and(
+            pred(SHACL.name).one(undefined),
+            pred(SHACL.path).one(undefined),
+            invPred(SHACL.property)
+                .thenFlat(pred(SHACL.targetClass))
+                .one(undefined),
+        )
+        .map(([code, name, path, clazz]) => {
+            const n = (code || name)?.id.value;
+            return (
+                (n ? "property " + JSON.stringify(n) : "a property") +
+                (path ? " (path " + termToString(path.id) : " (") +
+                (clazz ? ", shape " + termToString(clazz.id) : "") +
+                ")"
+            );
+        });
+
     const dataTypeLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
         pred(SHACL.datatype)
             .one()
-            .map(({ id }) => ({
-                extract: extractLeaf(id),
+            .and(where)
+            .map(([{ id }, w]) => ({
+                extract: extractLeaf(id, checkDatatype(id, w, false)),
             }));
+
+    // sh:nodeKind constrains the term, rdfl:codeType converts it, either alone
+    // is enough. Without rdfl:codeType, sh:datatype converts, under the kind.
+    const termLens: BasicLens<Cont, { extract: ShapeField["extract"] }> = pred(
+        SHACL.nodeKind,
+    )
+        .one(undefined)
+        .and(
+            pred(RDFL.terms.codeType).one(undefined),
+            pred(SHACL.datatype).one(undefined),
+            where,
+        )
+        .map(([kind, rdflDt, shDt, w], ctx) => {
+            if (!kind && !rdflDt) {
+                throw new LensError(
+                    "Expected sh:nodeKind or rdfl:codeType, found neither",
+                    ctx.lineage.slice(),
+                );
+            }
+            if (rdflDt && shDt && !rdflDt.id.equals(shDt.id)) {
+                console.warn(
+                    `rdf-lens: ${w} declares both rdfl:codeType ` +
+                        `${shortTerm(rdflDt.id)} and sh:datatype ` +
+                        `${shortTerm(shDt.id)}, converting with rdfl:codeType.`,
+                );
+            }
+            const check = shDt && checkDatatype(shDt.id, w, true);
+            return {
+                extract: extractTerm(
+                    kind?.id,
+                    (rdflDt || shDt)?.id,
+                    rdflDt ? undefined : check,
+                ),
+            };
+        });
 
     const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
         field(SHACL.class, "clazz").map(({ clazz: expected_class }) => {
@@ -646,13 +912,16 @@ function extractProperty(
             };
         });
 
+    // sh:nodeKind and rdfl:codeType take precedence over a lone sh:datatype:
+    // a property carrying both (`sh:nodeKind sh:Literal; sh:datatype
+    // xsd:integer`) still converts with the datatype, and enforces the kind.
     return pathLens
         .and(
             nameLens,
             minCount,
             maxCount,
             defaultValueLens,
-            clazzLens.or(dataTypeLens),
+            clazzLens.or(termLens).or(dataTypeLens),
         )
         .map((xs) => Object.assign({}, ...xs));
 }
