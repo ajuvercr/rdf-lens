@@ -133,12 +133,39 @@ console.log(point); // { "x": 5, "y": 8 }
   ].
 ```
 
-Note: `sh:datatype` is used for literals, `sh:class` is used for objects.
+Note: `sh:datatype` is used for literals, `sh:class` is used for objects, and `sh:nodeKind` is used to take a term as it is.
 
 * `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
 * `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
 
+**Extracting terms** with `sh:nodeKind` and `rdfl:codeType`. Sometimes the term itself is what you want, not a converted literal or a nested object. `sh:nodeKind` says which kind of term a property holds, `rdfl:codeType` what to turn it into. A property written as an IRI, so the parser resolves it against the base, can still be read as a string:
 
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Document>;
+  sh:property [
+    sh:name "source";
+    sh:path <source>;
+    sh:nodeKind sh:IRI;        # written as <./data.ttl>, resolved by the parser
+    rdfl:codeType xsd:string;  # read as "file:///.../data.ttl", leave out for a NamedNode
+    sh:maxCount 1;
+  ].
+```
+
+* All six node kinds are supported: `sh:IRI`, `sh:BlankNode`, `sh:Literal`, `sh:BlankNodeOrIRI`, `sh:BlankNodeOrLiteral` and `sh:IRIOrLiteral`. A value of another kind fails to parse, like a cardinality violation.
+* Either can be used alone: `sh:nodeKind` hands you the term, `rdfl:codeType` converts any term.
+* `rdfl:codeType` takes a datatype, like `sh:datatype`. `xsd:anyURI` gives an IRI, from an IRI or from a string holding an absolute IRI, so `sh:nodeKind sh:IRIOrLiteral; rdfl:codeType xsd:anyURI` accepts `<https://example.org>` and `"https://example.org"` alike. Node kinds and `xsd:iri` are not code types.
+* `rdfl:codeType rdfl:Term` converts nothing: it hands back the term the parser produced, instead of rebuilding it with this library's data factory.
+* An `rdfl:EnvVariable` holds a string, so it becomes an IRI when the kind allows one and the value is an absolute IRI, a literal when the kind allows that, and an error otherwise.
+
+**Which one applies.** The first of these a property has decides how it is extracted:
+
+1. `sh:class`: a nested object, built with the shape of that class.
+2. `sh:nodeKind` or `rdfl:codeType`: the term, checked against the kind and converted with `rdfl:codeType`, or with `sh:datatype` when there is no `rdfl:codeType` (rdf-lens warns when both are given and differ).
+3. `sh:datatype`: the value converted with that datatype.
+
+> [!WARNING]
+> `sh:datatype` describes literals, but rdf-lens used it on any term, so `sh:datatype xsd:string` turns IRIs and blank nodes into strings and `sh:datatype xsd:iri` (not an actual datatype) asks for the IRI itself. Both still work, but log a warning naming the property, its path and its shape: `xsd:iri` when the shape is read, a converting datatype the first time it is given an IRI or blank node. The replacements extract the same values: `sh:nodeKind sh:IRI` for `sh:datatype xsd:iri`, and `sh:nodeKind sh:IRI; rdfl:codeType xsd:string` for `sh:datatype xsd:string` holding IRIs.
 
 **Special implemented classes**
 Sometimes a plain old javascript objects is not enough, some special classes work out of the box.
