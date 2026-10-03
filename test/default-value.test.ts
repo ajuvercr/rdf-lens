@@ -36,7 +36,6 @@ describe("sh:defaultValue", () => {
   sh:property [
     sh:name "name";
     sh:path ex:name;
-    sh:minCount 1;
     sh:maxCount 1;
     sh:datatype xsd:string;
     sh:defaultValue "ajuvercr";
@@ -110,6 +109,45 @@ describe("sh:defaultValue", () => {
         ).toThrow();
     });
 
+    test("A default does not satisfy sh:minCount", () => {
+        expect(() =>
+            extract(
+                `
+[] a sh:NodeShape;
+  sh:targetClass ex:Me;
+  sh:property [
+    sh:name "name";
+    sh:path ex:name;
+    sh:minCount 1;
+    sh:maxCount 1;
+    sh:datatype xsd:string;
+    sh:defaultValue "ajuvercr";
+  ].
+`,
+                "<foobar> a ex:Me.",
+            ),
+        ).toThrow();
+    });
+
+    test("A default does not satisfy sh:minCount on a multi valued field", () => {
+        expect(() =>
+            extract(
+                `
+[] a sh:NodeShape;
+  sh:targetClass ex:Me;
+  sh:property [
+    sh:name "nicknames";
+    sh:path ex:nickname;
+    sh:minCount 1;
+    sh:datatype xsd:string;
+    sh:defaultValue ( "ajuvercr" "semssie" );
+  ].
+`,
+                "<foobar> a ex:Me.",
+            ),
+        ).toThrow();
+    });
+
     test("Default may be an environment variable", () => {
         process.env["RDF_LENS_TEST_NAME"] = "from the environment";
 
@@ -145,7 +183,6 @@ ${meShape}
     sh:name "friend";
     sh:path ex:friend;
     sh:class ex:Me;
-    sh:minCount 1;
     sh:maxCount 1;
     sh:defaultValue ${defaultValue};
   ].

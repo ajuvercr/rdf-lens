@@ -137,7 +137,7 @@ Note: `sh:datatype` is used for literals, `sh:class` is used for objects, and `s
 
 * `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
 * `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
-* `sh:defaultValue` tells rdf-lens what to use when the data has no value for this property. A default satisfies `sh:minCount`, so a required property with a default never fails to parse.
+* `sh:defaultValue` tells rdf-lens what to use when the data has no value for this property. A default does not satisfy `sh:minCount`: a required property must still be present in the data, so defaults only make sense on optional properties.
 
 **Default values** are extracted the same way the data would have been, but from the shapes graph:
 
@@ -150,7 +150,6 @@ Note: `sh:datatype` is used for literals, `sh:class` is used for objects, and `s
     sh:datatype xsd:string;
     sh:defaultValue "ajuvercr";   # A literal is converted with sh:datatype
     sh:maxCount 1;
-    sh:minCount 1;
   ], [
     sh:name "age";
     sh:path <age>;
@@ -178,7 +177,6 @@ For a `sh:class` property the default is a node, and it is extracted through tha
     sh:class <Me>;
     sh:defaultValue [ <age> 95 ];   # <name> comes from the Me shape default
     sh:maxCount 1;
-    sh:minCount 1;
   ].
 ```
 
