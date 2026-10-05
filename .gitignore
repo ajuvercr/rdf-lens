@@ -1,6 +1,11 @@
 # Outputs
 lib
 
+# This repository tracks package-lock.json, contributors using another package
+# manager should not commit a second lockfile
+pnpm-lock.yaml
+yarn.lock
+
 # Based on https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore
 
 # Logs
