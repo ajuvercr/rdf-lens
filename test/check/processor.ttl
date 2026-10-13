@@ -1,0 +1,24 @@
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix ex: <http://example.org/>.
+
+# A processor definition from before sh:nodeKind
+[ ] a sh:NodeShape;
+  sh:targetClass ex:Fetch;
+  sh:property [
+    sh:path ex:url;
+    sh:name "url";
+    sh:minCount 1;
+    sh:maxCount 1;
+    sh:datatype xsd:iri;
+  ], [
+    sh:path ex:source;
+    sh:name "source";
+    sh:maxCount 1;
+    sh:datatype xsd:string;
+  ], [
+    sh:path ex:writer;
+    sh:name "writer";
+    sh:maxCount 1;
+    sh:class ex:Writer;
+  ].

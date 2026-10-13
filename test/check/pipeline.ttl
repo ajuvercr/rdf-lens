@@ -1,0 +1,12 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#>.
+@prefix ex: <http://example.org/>.
+
+<> owl:imports <./processor.ttl>.
+
+<fetch> a ex:Fetch;
+  ex:url <https://example.org/data>;
+  ex:source <./data.ttl>;
+  ex:writer <out>.
+
+<broken> a ex:Fetch;
+  ex:source "a string".

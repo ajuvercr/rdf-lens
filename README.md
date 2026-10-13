@@ -180,7 +180,30 @@ Note: `sh:datatype` is used for literals, `sh:class` is used for objects, and `s
 >
 > Other datatypes rdf-lens converts, like `xsd:integer`, warn the same way as `xsd:string`, with their own code type. A datatype it does not convert, like `rdf:langString`, hands back the term and does not warn.
 >
-> Warnings go to `console.warn` unless you route them elsewhere, a logger for example, with `setWarningHandler((message) => logger.warn(message))`. A handler that does nothing silences them, and `setWarningHandler()` restores `console.warn`.
+> Warnings go to `console.warn` unless you route them elsewhere, a logger for example, with `setWarningHandler((message) => logger.warn(message))`. The handler also receives the property shape a warning is about, and `setWarningHandler` returns the handler it replaces, to put back afterwards. A handler that does nothing silences them, and `setWarningHandler()` restores `console.warn`.
+
+**Checking shapes.** `rdf-lens check` reads shapes from Turtle or TriG files, and the files they `owl:imports`, and prints what rdf-lens warns about and what fails, without running anything:
+
+```sh
+npx rdf-lens check processor.ttl              # the shapes alone
+npx rdf-lens check examples/pipeline.ttl      # data using them, with the shapes it imports
+```
+
+```
+warning  property "url" (path <https://example.org/url>, shape <https://example.org/Fetch>) uses sh:datatype xsd:iri, which is deprecated: use sh:nodeKind sh:IRI instead, it extracts the same term.
+         seen on <file:///.../examples/fetch>
+error    <file:///.../examples/broken>: Field is not defined and required, in field "url"
+
+Checked 1 shape on 2 nodes: 1 warning, 1 error.
+Not checked, no shape describes them: <https://example.org/Writer>
+```
+
+* Without data it finds shapes that cannot be read, naming every property at fault, an unsupported `sh:codeType` or `sh:nodeKind`, and `sh:datatype xsd:iri`.
+* With data it also extracts every node typed with a target class, or a subclass of one, and finds what depends on the data: `sh:datatype` given IRIs or blank nodes, the exact replacement for `sh:datatype xsd:iri`, and values that do not fit their shape. Pass example data, a pipeline using a processor for example, next to the shapes.
+* A class used with `sh:class` that no shape describes, like one a framework provides a lens for, is taken as is and listed as not checked.
+* It exits with 1 when it finds something, so it fits in CI, and with 2 when it cannot run. `--no-imports` reads only the given files.
+
+The same check is available in code, to run in a test for example: `checkShapes(quads)` returns the findings, each with its level, message, property shape and the data node it was found on.
 
 **Special implemented classes**
 Sometimes a plain old javascript objects is not enough, some special classes work out of the box.

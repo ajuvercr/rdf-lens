@@ -31,21 +31,37 @@ function termToString(term: Term): string {
     return JSON.stringify(term.value);
 }
 
-let warningHandler: ((message: string) => void) | undefined;
+/**
+ * WarningHandler receives a warning about a shape, and the property shape it
+ * is about.
+ */
+export type WarningHandler = (message: string, property?: Term) => void;
+
+let warningHandler: WarningHandler | undefined;
 
 /**
  * setWarningHandler routes the warnings rdf-lens gives about shapes, such as a
  * deprecated sh:datatype, to a handler of your own, like a logger. Without one
  * they go to console.warn, and a handler that does nothing silences them.
+ * Returns the handler it replaces, to put back afterwards.
  */
-export function setWarningHandler(handler?: (message: string) => void) {
+export function setWarningHandler(
+    handler?: WarningHandler,
+): WarningHandler | undefined {
+    const previous = warningHandler;
     warningHandler = handler;
+    return previous;
 }
 
-function warn(message: string) {
-    if (warningHandler) warningHandler(message);
+function warn(message: string, property?: Term) {
+    if (warningHandler) warningHandler(message, property);
     else console.warn(message);
 }
+
+/**
+ * Where names a property shape in warnings and errors, and holds its node.
+ */
+type Where = (() => string) & { property: Term };
 
 /**
  * ShapeField describes a field/property in a SHACL shape, including its name, path, cardinality, and extraction lens
@@ -885,7 +901,7 @@ function iriAdvice(where: string, term: Term): string {
  */
 function checkDatatype(
     datatype: Term,
-    where: () => string,
+    where: Where,
     hasNodeKind: boolean,
 ): ((term: Term) => void) | undefined {
     const iri = datatype.equals(XSD.terms.custom("iri"));
@@ -905,7 +921,7 @@ function checkDatatype(
         if (!iri && term.termType === "Literal") return;
         warned.add(term.termType);
 
-        if (iri) return warn(iriAdvice(where(), term));
+        if (iri) return warn(iriAdvice(where(), term), where.property);
 
         let kind = "sh:IRIOrLiteral";
         let only = "sh:IRI if only IRIs are expected";
@@ -921,6 +937,7 @@ function checkDatatype(
             `rdf-lens: ${where()} declares sh:datatype ${dt} but was given ` +
                 `${describeTerm(term)}, which it converts by value. ${fix}, ` +
                 "the value stays the same.",
+            where.property,
         );
     };
 }
@@ -932,7 +949,7 @@ function checkDatatype(
  */
 function checkCodeType(
     codeType: Term,
-    where: () => string,
+    where: Where,
 ): ((term: Term) => void) | undefined {
     // anyURI rejects blank nodes itself
     if (codeType.equals(XSD.terms.custom("anyURI")) || !converts(codeType)) {
@@ -947,6 +964,7 @@ function checkCodeType(
             `rdf-lens: ${where()} converts a blank node with sh:codeType ` +
                 `${shortTerm(codeType)}, which reads its label. Add ` +
                 "sh:nodeKind, such as sh:IRIOrLiteral, to reject blank nodes.",
+            where.property,
         );
     };
 }
@@ -975,6 +993,14 @@ const describeProperty: BasicLens<Cont, string> = pred(
             ")"
         );
     });
+
+/**
+ * describeShapeProperty names a property shape as rdf-lens warnings and errors
+ * do: its name, its path and the target class of its node shape.
+ */
+export function describeShapeProperty(property: Term, quads: Quad[]): string {
+    return describeProperty.execute({ id: property, quads });
+}
 
 /**
  * once computes a value the first time it is asked for.
@@ -1016,12 +1042,13 @@ function extractProperty(
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 
     // A nested object, built with the shape of its class, under the node kind
-    const clazzLens = (where: () => string): BasicLens<Cont, Extract> =>
+    const clazzLens = (where: Where): BasicLens<Cont, Extract> =>
         field(SHACL.class, "clazz")
             .and(pred(SHACL.nodeKind).one(undefined))
             .map(([{ clazz: expected_class }, kindTerm]) => {
                 const kind = nodeKind(kindTerm?.id, where);
-                if (kind.problem) warn("rdf-lens: " + kind.problem);
+                if (kind.problem)
+                    warn("rdf-lens: " + kind.problem, where.property);
 
                 return {
                     extract: new BasicLens<Cont, unknown>(
@@ -1067,7 +1094,7 @@ function extractProperty(
     // `sh:nodeKind sh:Literal; sh:datatype xsd:integer` still gives a number.
     // Without either, sh:datatype converts any term, as it always did.
     const leafLens = (
-        where: () => string,
+        where: Where,
         codeType?: Term,
     ): BasicLens<Cont, Extract> =>
         pred(SHACL.nodeKind)
@@ -1095,7 +1122,7 @@ function extractProperty(
                 const problem =
                     kind.problem ??
                     (codeType ? codeTypeProblem(codeType, where) : undefined);
-                if (problem) warn("rdf-lens: " + problem);
+                if (problem) warn("rdf-lens: " + problem, where.property);
 
                 // sh:datatype describes the data and sh:codeType what code
                 // receives, so the two may differ without a warning
@@ -1112,6 +1139,7 @@ function extractProperty(
                             "sh:nodeKind, which is deprecated: use sh:codeType " +
                             "xsd:anyURI instead, or leave it out when sh:nodeKind " +
                             "only allows IRIs.",
+                        where.property,
                     );
                     convert = XSD.terms.custom("anyURI");
                 } else if (!codeType && datatype) {
@@ -1133,7 +1161,10 @@ function extractProperty(
     return new BasicLens<Cont, ShapeField>((c, ctx) => {
         // Only worked out for a warning or an error, as it looks at the
         // shape around the property
-        const where = once(() => describeProperty.execute(c));
+        const where: Where = Object.assign(
+            once(() => describeProperty.execute(c)),
+            { property: c.id },
+        );
 
         // SHACL 1.2: tools that would derive the type from the constraints
         // use sh:codeType instead, so it goes before the nested object
