@@ -19,7 +19,7 @@ import {
 import { DataFactory, NamedNode } from "rdf-data-factory";
 import { RDFL, RDFS, SHACL } from "./ontology";
 
-const { literal, quad } = new DataFactory();
+const { blankNode, literal, namedNode, quad } = new DataFactory();
 
 function termToString(term: Term): string {
     if (term.termType === "NamedNode") {
@@ -29,6 +29,22 @@ function termToString(term: Term): string {
         return "_:" + term.value;
     }
     return JSON.stringify(term.value);
+}
+
+let warningHandler: ((message: string) => void) | undefined;
+
+/**
+ * setWarningHandler routes the warnings rdf-lens gives about shapes, such as a
+ * deprecated sh:datatype, to a handler of your own, like a logger. Without one
+ * they go to console.warn, and a handler that does nothing silences them.
+ */
+export function setWarningHandler(handler?: (message: string) => void) {
+    warningHandler = handler;
+}
+
+function warn(message: string) {
+    if (warningHandler) warningHandler(message);
+    else console.warn(message);
 }
 
 /**
@@ -142,7 +158,11 @@ export function toLens(
                 return out;
             });
 
-        return asField;
+        // Each field on a lineage of its own, so an error in one does not
+        // list the fields extracted before it
+        return new BasicLens<Cont, { [label: string]: unknown }>((c, ctx) =>
+            asField.execute(c, ctx.clone()),
+        );
     });
 
     return fields[0]
@@ -409,6 +429,212 @@ function dataTypeToExtract(dataType: Term, t: Term): unknown {
 }
 
 /**
+ * The term types each sh:nodeKind accepts.
+ */
+const NODE_KINDS: [Term, string[]][] = [
+    [SHACL.IRI, ["NamedNode"]],
+    [SHACL.BlankNode, ["BlankNode"]],
+    [SHACL.Literal, ["Literal"]],
+    [SHACL.BlankNodeOrIRI, ["BlankNode", "NamedNode"]],
+    [SHACL.BlankNodeOrLiteral, ["BlankNode", "Literal"]],
+    [SHACL.IRIOrLiteral, ["NamedNode", "Literal"]],
+];
+
+/**
+ * The datatypes sh:codeType converts to, next to rdfl:Term for the term as is.
+ */
+const CODE_TYPES = [
+    "string",
+    "integer",
+    "decimal",
+    "float",
+    "double",
+    "boolean",
+    "dateTime",
+    "anyURI",
+].map((x) => XSD.terms.custom(x));
+
+/**
+ * Rebuilds a term with this library's data factory, whichever parser made it.
+ */
+function normalizeTerm(term: Term): Term {
+    if (term.termType === "NamedNode") return namedNode(term.value);
+    if (term.termType === "BlankNode") return blankNode(term.value);
+    if (term.termType !== "Literal") return term;
+    if (!term.language) return literal(term.value, term.datatype);
+    return literal(term.value, {
+        language: term.language,
+        direction: term.direction || undefined,
+    });
+}
+
+// A scheme of two or more characters, so a Windows path like C:\data is not an
+// IRI, followed by none of the characters IRIs exclude
+const ABSOLUTE_IRI = /^[a-z][a-z0-9+.-]+:[^\s<>"{}|\\^`]+$/i;
+// A host and port like localhost:8080, which would read as a scheme and a path
+const HOST_PORT = /^[^:/?#]+:\d+(?:[/?#]|$)/;
+
+/**
+ * isAbsoluteIri tells whether a string holds an absolute IRI, to be read as one.
+ */
+function isAbsoluteIri(value: string): boolean {
+    return ABSOLUTE_IRI.test(value) && !HOST_PORT.test(value);
+}
+
+/**
+ * describeTerm names a term in warnings and errors.
+ */
+function describeTerm(term: Term): string {
+    if (term.termType === "NamedNode") return "the IRI " + termToString(term);
+    if (term.termType === "Literal") return "the literal " + termToString(term);
+    if (term.termType === "BlankNode") return "a blank node";
+    return "a " + term.termType;
+}
+
+/**
+ * NodeKind checks terms against an sh:nodeKind, letting every term pass without
+ * one (given is false then). problem tells what is wrong with an unknown node
+ * kind.
+ */
+type NodeKind = {
+    given: boolean;
+    problem?: string;
+    allows: (termType: string) => boolean;
+    violation: (term: Term, ctx: LensContext, envKey?: string) => LensError;
+};
+
+function nodeKind(kindTerm: Term | undefined, where: () => string): NodeKind {
+    const kind = kindTerm && NODE_KINDS.find(([k]) => kindTerm.equals(k));
+    const allows = (termType: string) => !kind || kind[1].includes(termType);
+    const problem =
+        kindTerm && !kind
+            ? `Unknown sh:nodeKind: ${where()} uses ${shortTerm(kindTerm)}, ` +
+              `expected one of ${NODE_KINDS.map(([k]) => shortTerm(k)).join(", ")}`
+            : undefined;
+
+    const violation = (term: Term, ctx: LensContext, envKey?: string) => {
+        const found = envKey
+            ? `environment variable ${envKey}, which holds ` +
+              JSON.stringify(term.value)
+            : describeTerm(term);
+        return new LensError(
+            `Node kind violation: ${where()} expects ` +
+                `${shortTerm(kindTerm!)}, found ${found}`,
+            [
+                {
+                    name: "expected " + termToString(kindTerm!),
+                    opts: "found " + term.termType,
+                },
+                ...ctx.lineage.slice(),
+            ],
+        );
+    };
+
+    return { given: !!kindTerm, problem, allows, violation };
+}
+
+/**
+ * codeTypeOf reads sh:codeType (SHACL 1.2), what code receives from a property.
+ */
+const codeTypeOf: BasicLens<Cont, Term | undefined> = pred(
+    SHACL.custom("codeType"),
+)
+    .one(undefined)
+    .map((found) => found?.id);
+
+/**
+ * codeTypeProblem tells what is wrong with a code type, if anything: node kinds
+ * describe the data, xsd:iri is no datatype, and a datatype rdf-lens does not
+ * convert would hand code a term where it expects a value.
+ */
+function codeTypeProblem(
+    codeType: Term,
+    where: () => string,
+): string | undefined {
+    if (
+        codeType.equals(RDFL.terms.Term) ||
+        CODE_TYPES.some((x) => x.equals(codeType))
+    ) {
+        return;
+    }
+
+    const found = `Unsupported sh:codeType: ${where()} uses ${shortTerm(codeType)}`;
+    if (codeType.equals(XSD.terms.custom("iri"))) {
+        return `${found}, which is no datatype, use xsd:anyURI for an IRI`;
+    }
+    if (NODE_KINDS.some(([k]) => codeType.equals(k))) {
+        return `${found}, a node kind, which belongs in sh:nodeKind`;
+    }
+    const supported = [...CODE_TYPES, RDFL.terms.Term].map(shortTerm);
+    return `${found}, expected one of ${supported.join(", ")}`;
+}
+
+/**
+ * extractTerm extracts the term at the path itself. The node kind constrains
+ * its term type, convert turns it into what code receives: an xsd datatype
+ * converts the value, xsd:anyURI makes an IRI of an IRI or an absolute IRI
+ * string, rdfl:Term keeps the parsed term as is, and none rebuilds it with this
+ * library's factory. An environment variable holds a string, so it becomes an
+ * IRI when the kind allows one and it holds an absolute IRI, a literal
+ * otherwise, converted with its own rdfl:datatype when there is no code type.
+ * inspect sees every term from the data before it is converted.
+ *
+ * problem, a fault in the shape, is thrown once a value is extracted: throwing
+ * while reading the shape would drop the whole node shape, leaving nothing to
+ * point at the typo.
+ */
+function extractTerm(
+    kind: NodeKind,
+    convert: Term | undefined,
+    where: () => string,
+    inspect?: (term: Term) => void,
+    problem?: string,
+): BasicLens<Cont, unknown> {
+    const env = envValue();
+
+    return new BasicLens<Cont, unknown>((c, ctx) => {
+        if (problem) throw new LensError(problem, ctx.lineage.slice());
+
+        let term = c.id;
+        let envKey: string | undefined;
+        let to = convert;
+        if (isEnvVariable(c)) {
+            const { key, value, dt } = env.execute(c, ctx);
+            envKey = key;
+            term =
+                kind.given && kind.allows("NamedNode") && isAbsoluteIri(value)
+                    ? namedNode(value)
+                    : literal(value);
+            to = convert || dt;
+        }
+        if (!kind.allows(term.termType)) {
+            throw kind.violation(term, ctx, envKey);
+        }
+        if (!envKey && to && !to.equals(RDFL.terms.Term)) {
+            inspect?.(term);
+        }
+
+        if (!to) return normalizeTerm(term);
+        // The term untouched, quads and all, not a rebuilt copy of it
+        if (to.equals(RDFL.terms.Term)) return term;
+        if (to.equals(XSD.terms.custom("anyURI"))) {
+            if (term.termType === "NamedNode") return normalizeTerm(term);
+            if (term.termType === "Literal" && isAbsoluteIri(term.value)) {
+                return namedNode(term.value);
+            }
+            throw new LensError(
+                `Expected an IRI: ${where()} was given ${describeTerm(term)}`,
+                [
+                    { name: "found", opts: termToString(term) },
+                    ...ctx.lineage.slice(),
+                ],
+            );
+        }
+        return dataTypeToExtract(to, term);
+    });
+}
+
+/**
  * Cache is a mapping of class IRIs to their extraction lenses
  */
 type Cache = {
@@ -423,10 +649,25 @@ type SubClasses = {
 };
 
 /**
- * envLens extracts environment variables from RDF nodes of type EnvVariable, with optional default and datatype conversion.
+ * isEnvVariable tells whether a node is typed rdfl:EnvVariable.
+ */
+function isEnvVariable({ id, quads }: Cont): boolean {
+    return quads.some(
+        (q) =>
+            q.subject.equals(id) &&
+            q.predicate.equals(RDF.terms.type) &&
+            q.object.equals(RDFL.terms.EnvVariable),
+    );
+}
+
+/**
+ * envValue resolves an rdfl:EnvVariable node to its key and the string it
+ * holds, together with the rdfl:datatype the node itself asks for, if any.
  * Throws if variable is missing and no default is set.
  */
-function envLens(dataType?: Term): BasicLens<Cont, unknown> {
+type EnvValue = { key: string; value: string; dt?: Term };
+
+function envValue(): BasicLens<Cont, EnvValue> {
     const checkType = pred(RDF.terms.type)
         .thenSome(
             new BasicLens(({ id }, ctx) => {
@@ -459,12 +700,11 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
 
     return checkType
         .and(envName, defaultValue, envDatatype)
-        .map(([_, { key }, { defaultValue }, { dt }], ctx) => {
+        .map(([, { key }, { defaultValue }, { dt }], ctx) => {
             const value = process.env[key] || defaultValue;
-            const thisDt = dataType || dt || XSD.terms.custom("literal");
 
             if (value) {
-                return dataTypeToExtract(thisDt, literal(value));
+                return { key, value, dt };
             } else {
                 throw new LensError("ENV and default are not set", [
                     { name: "Env Key", opts: key },
@@ -472,6 +712,26 @@ function envLens(dataType?: Term): BasicLens<Cont, unknown> {
                 ]);
             }
         });
+}
+
+/**
+ * envTerm resolves an rdfl:EnvVariable node to the term that stands in for it:
+ * an IRI when its rdfl:datatype is xsd:anyURI or xsd:iri, a literal of its
+ * rdfl:datatype otherwise, and a string literal without one, so envReplace
+ * always puts a term in the data.
+ * Throws if variable is missing and no default is set.
+ */
+function envTerm(): BasicLens<Cont, { key: string; term: Term }> {
+    return envValue().map(({ key, value, dt }) => {
+        if (dt?.termType !== "NamedNode") return { key, term: literal(value) };
+        if (
+            dt.equals(XSD.terms.custom("anyURI")) ||
+            dt.equals(XSD.terms.custom("iri"))
+        ) {
+            return { key, term: namedNode(value) };
+        }
+        return { key, term: literal(value, dt) };
+    });
 }
 
 /**
@@ -511,7 +771,11 @@ function remove_cbd(quads: Quad[], subject: Term) {
 export function envReplace(): BasicLens<Quad[], Quad[]> {
     const shouldReplace = empty<[Cont, Quad[]]>()
         .map((x) => x[0])
-        .then(envLens().and(empty<Cont>().map((x) => x.id)))
+        .then(
+            envTerm()
+                .map((x) => x.term)
+                .and(empty<Cont>().map((x) => x.id)),
+        )
         .map(([value, id]) => ({
             value,
             id,
@@ -549,13 +813,185 @@ export function envReplace(): BasicLens<Quad[], Quad[]> {
 }
 
 /**
- * extractLeaf creates a lens that extracts a leaf value from a node, using envLens if available, otherwise converting by datatype.
+ * extractLeaf creates a lens that extracts a leaf value from a node, resolving it as an environment variable when it is one, otherwise converting by datatype.
+ * inspect is handed every term from the data before it is converted.
  */
-function extractLeaf(datatype: Term): BasicLens<Cont, unknown> {
-    return envLens(datatype).or(
-        empty<Cont>().map((item) => dataTypeToExtract(datatype, item.id)),
-    );
+function extractLeaf(
+    datatype: Term,
+    inspect?: (term: Term) => void,
+): BasicLens<Cont, unknown> {
+    const env = envValue();
+    return new BasicLens<Cont, unknown>((c, ctx) => {
+        if (isEnvVariable(c)) {
+            const { value } = env.execute(c, ctx);
+            return dataTypeToExtract(datatype, literal(value));
+        }
+        inspect?.(c.id);
+        return dataTypeToExtract(datatype, c.id);
+    });
 }
+
+const PREFIXES: [string, string][] = [
+    ["http://www.w3.org/2001/XMLSchema#", "xsd:"],
+    ["http://www.w3.org/ns/shacl#", "sh:"],
+    [RDFL.custom(""), "rdfl:"],
+];
+
+function shortTerm(term: Term): string {
+    const prefix = PREFIXES.find(([ns]) => term.value.startsWith(ns));
+    return prefix
+        ? prefix[1] + term.value.slice(prefix[0].length)
+        : termToString(term);
+}
+
+/**
+ * converts tells whether rdf-lens converts values of a datatype, rather than
+ * handing back the term as is.
+ */
+function converts(datatype: Term): boolean {
+    const probe = literal("");
+    return dataTypeToExtract(datatype, probe) !== probe;
+}
+
+/**
+ * iriAdvice tells what replaces sh:datatype xsd:iri for the term it was given:
+ * only that term shows which replacement extracts the same value.
+ */
+function iriAdvice(where: string, term: Term): string {
+    const start = `rdf-lens: ${where} uses sh:datatype xsd:iri, which is deprecated`;
+    if (term.termType === "Literal") {
+        return (
+            `${start}, and was given ${describeTerm(term)}, which it reads ` +
+            "as an IRI. Use sh:nodeKind sh:IRIOrLiteral and sh:codeType " +
+            "xsd:anyURI instead, it extracts the same IRI from an absolute IRI."
+        );
+    }
+    if (term.termType === "BlankNode") {
+        return (
+            `${start}, and was given a blank node, which it turns into an IRI ` +
+            "named after the blank node's label. Use sh:nodeKind " +
+            "sh:BlankNodeOrIRI instead, it extracts the blank node itself."
+        );
+    }
+    return `${start}: use sh:nodeKind sh:IRI instead, it extracts the same term.`;
+}
+
+/**
+ * checkDatatype returns a check, to run on every term from the data, that warns
+ * when sh:datatype is used for more than literals: xsd:iri, which is
+ * deprecated, and a converting datatype such as xsd:string handed an IRI or a
+ * blank node, which belongs in sh:nodeKind with sh:codeType. It warns once
+ * per term type, with the replacement for that type.
+ */
+function checkDatatype(
+    datatype: Term,
+    where: () => string,
+    hasNodeKind: boolean,
+): ((term: Term) => void) | undefined {
+    const iri = datatype.equals(XSD.terms.custom("iri"));
+    // anyURI is about IRIs by intent, and a datatype rdf-lens does not convert
+    // hands the term back as is, which sh:codeType rdfl:Term asks for
+    if (
+        !iri &&
+        (datatype.equals(XSD.terms.custom("anyURI")) || !converts(datatype))
+    ) {
+        return;
+    }
+
+    const dt = shortTerm(datatype);
+    const warned = new Set<string>();
+    return (term) => {
+        if (warned.has(term.termType)) return;
+        if (!iri && term.termType === "Literal") return;
+        warned.add(term.termType);
+
+        if (iri) return warn(iriAdvice(where(), term));
+
+        let kind = "sh:IRIOrLiteral";
+        let only = "sh:IRI if only IRIs are expected";
+        if (term.termType === "BlankNode") {
+            kind = "sh:BlankNodeOrLiteral";
+            only = "sh:BlankNode if only blank nodes are expected";
+        }
+        const fix = hasNodeKind
+            ? `Use sh:codeType ${dt} instead of sh:datatype ${dt}, ` +
+              "sh:datatype only describes literals"
+            : `Use sh:nodeKind ${kind} (or ${only}) and sh:codeType ${dt}`;
+        warn(
+            `rdf-lens: ${where()} declares sh:datatype ${dt} but was given ` +
+                `${describeTerm(term)}, which it converts by value. ${fix}, ` +
+                "the value stays the same.",
+        );
+    };
+}
+
+/**
+ * checkCodeType returns a check, to run on every term from the data, that warns
+ * once when a code type without sh:nodeKind converts a blank node, which only
+ * has its label to convert.
+ */
+function checkCodeType(
+    codeType: Term,
+    where: () => string,
+): ((term: Term) => void) | undefined {
+    // anyURI rejects blank nodes itself
+    if (codeType.equals(XSD.terms.custom("anyURI")) || !converts(codeType)) {
+        return;
+    }
+
+    let warned = false;
+    return (term) => {
+        if (warned || term.termType !== "BlankNode") return;
+        warned = true;
+        warn(
+            `rdf-lens: ${where()} converts a blank node with sh:codeType ` +
+                `${shortTerm(codeType)}, which reads its label. Add ` +
+                "sh:nodeKind, such as sh:IRIOrLiteral, to reject blank nodes.",
+        );
+    };
+}
+
+/**
+ * describeProperty names a property in warnings and errors, with the target
+ * class of its node shape, as a path alone may be shared by many shapes.
+ */
+const describeProperty: BasicLens<Cont, string> = pred(
+    SHACL.custom("codeIdentifier"),
+)
+    .one(undefined)
+    .and(
+        pred(SHACL.name).one(undefined),
+        pred(SHACL.path).one(undefined),
+        invPred(SHACL.property)
+            .thenFlat(pred(SHACL.targetClass))
+            .one(undefined),
+    )
+    .map(([code, name, path, clazz]) => {
+        const n = (code || name)?.id.value;
+        return (
+            (n ? "property " + JSON.stringify(n) : "a property") +
+            (path ? " (path " + termToString(path.id) : " (") +
+            (clazz ? ", shape " + termToString(clazz.id) : "") +
+            ")"
+        );
+    });
+
+/**
+ * once computes a value the first time it is asked for.
+ */
+function once<T>(fn: () => T): () => T {
+    let done = false;
+    let value: T;
+    return () => {
+        if (!done) {
+            value = fn();
+            done = true;
+        }
+        return value;
+    };
+}
+
+type Extract = { extract: ShapeField["extract"] };
 
 /**
  * extractProperty extracts a ShapeField from a SHACL property definition, handling path, name, min/max count, datatype/class, and extraction lens.
@@ -579,45 +1015,139 @@ function extractProperty(
     const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 
-    const dataTypeLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
-        pred(SHACL.datatype)
-            .one()
-            .map(({ id }) => ({
-                extract: extractLeaf(id),
-            }));
+    // A nested object, built with the shape of its class, under the node kind
+    const clazzLens = (where: () => string): BasicLens<Cont, Extract> =>
+        field(SHACL.class, "clazz")
+            .and(pred(SHACL.nodeKind).one(undefined))
+            .map(([{ clazz: expected_class }, kindTerm]) => {
+                const kind = nodeKind(kindTerm?.id, where);
+                if (kind.problem) warn("rdf-lens: " + kind.problem);
 
-    const clazzLens: BasicLens<Cont, { extract: ShapeField["extract"] }> =
-        field(SHACL.class, "clazz").map(({ clazz: expected_class }) => {
-            return {
-                extract: new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
-                    // We did not find a type, so use the expected class lens
-                    const lens = cache[expected_class];
-                    if (!lens) {
+                return {
+                    extract: new BasicLens<Cont, unknown>(
+                        ({ id, quads }, ctx) => {
+                            if (kind.problem) {
+                                throw new LensError(
+                                    kind.problem,
+                                    ctx.lineage.slice(),
+                                );
+                            }
+                            if (!kind.allows(id.termType)) {
+                                throw kind.violation(id, ctx);
+                            }
+                            // We did not find a type, so use the expected class lens
+                            const lens = cache[expected_class];
+                            if (!lens) {
+                                throw new LensError(
+                                    "Tried extracting class, but no shape was defined",
+                                    [
+                                        {
+                                            name:
+                                                "Found type: " + expected_class,
+                                            opts: Object.keys(cache),
+                                        },
+                                        ...ctx.lineage.slice(),
+                                    ],
+                                );
+                            }
+                            if (apply[expected_class]) {
+                                return lens
+                                    .map(apply[expected_class])
+                                    .execute({ id, quads }, ctx);
+                            } else {
+                                return lens.execute({ id, quads }, ctx);
+                            }
+                        },
+                    ).named("extracting class", expected_class),
+                };
+            });
+
+    // sh:nodeKind constrains the term, sh:codeType converts it, either alone
+    // is enough. Without sh:codeType, sh:datatype converts, under the kind:
+    // `sh:nodeKind sh:Literal; sh:datatype xsd:integer` still gives a number.
+    // Without either, sh:datatype converts any term, as it always did.
+    const leafLens = (
+        where: () => string,
+        codeType?: Term,
+    ): BasicLens<Cont, Extract> =>
+        pred(SHACL.nodeKind)
+            .one(undefined)
+            .and(pred(SHACL.datatype).one(undefined))
+            .map(([kindTerm, datatypeTerm], ctx) => {
+                const datatype = datatypeTerm?.id;
+
+                if (!kindTerm && !codeType) {
+                    if (!datatype) {
                         throw new LensError(
-                            "Tried extracting class, but no shape was defined",
-                            [
-                                {
-                                    name: "Found type: " + expected_class,
-                                    opts: Object.keys(cache),
-                                },
-                                ...ctx.lineage.slice(),
-                            ],
+                            "Expected sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
+                            ctx.lineage.slice(),
                         );
                     }
-                    if (apply[expected_class]) {
-                        return lens
-                            .map(apply[expected_class])
-                            .execute({ id, quads }, ctx);
-                    } else {
-                        return lens.execute({ id, quads }, ctx);
-                    }
-                }).named("extracting class", expected_class),
-            };
-        });
+                    return {
+                        extract: extractLeaf(
+                            datatype,
+                            checkDatatype(datatype, where, false),
+                        ),
+                    };
+                }
 
-    return pathLens
-        .and(nameLens, minCount, maxCount, clazzLens.or(dataTypeLens))
-        .map((xs) => Object.assign({}, ...xs));
+                const kind = nodeKind(kindTerm?.id, where);
+                const problem =
+                    kind.problem ??
+                    (codeType ? codeTypeProblem(codeType, where) : undefined);
+                if (problem) warn("rdf-lens: " + problem);
+
+                // sh:datatype describes the data and sh:codeType what code
+                // receives, so the two may differ without a warning
+                let convert = codeType;
+                let inspect =
+                    codeType && !kindTerm
+                        ? checkCodeType(codeType, where)
+                        : undefined;
+                if (!codeType && datatype?.equals(XSD.terms.custom("iri"))) {
+                    // Not an error like sh:codeType xsd:iri: sh:datatype
+                    // xsd:iri was how rdf-lens asked for an IRI
+                    warn(
+                        `rdf-lens: ${where()} uses sh:datatype xsd:iri next to ` +
+                            "sh:nodeKind, which is deprecated: use sh:codeType " +
+                            "xsd:anyURI instead, or leave it out when sh:nodeKind " +
+                            "only allows IRIs.",
+                    );
+                    convert = XSD.terms.custom("anyURI");
+                } else if (!codeType && datatype) {
+                    convert = datatype;
+                    inspect = checkDatatype(datatype, where, true);
+                }
+
+                return {
+                    extract: extractTerm(
+                        kind,
+                        convert,
+                        where,
+                        inspect,
+                        problem,
+                    ),
+                };
+            });
+
+    return new BasicLens<Cont, ShapeField>((c, ctx) => {
+        // Only worked out for a warning or an error, as it looks at the
+        // shape around the property
+        const where = once(() => describeProperty.execute(c));
+
+        // SHACL 1.2: tools that would derive the type from the constraints
+        // use sh:codeType instead, so it goes before the nested object
+        // sh:class would build
+        const codeType = codeTypeOf.execute(c, ctx.clone());
+        const extract = codeType
+            ? leafLens(where, codeType)
+            : clazzLens(where).or(leafLens(where));
+
+        return pathLens
+            .and(nameLens, minCount, maxCount, extract)
+            .map((xs) => <ShapeField>Object.assign({}, ...xs))
+            .execute(c, ctx);
+    });
 }
 
 /**
