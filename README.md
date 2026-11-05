@@ -133,7 +133,36 @@ console.log(point); // { "x": 5, "y": 8 }
   ].
 ```
 
-Note: `sh:datatype` is used for literals, `sh:class` is used for objects, and `sh:nodeKind` is used to take a term as it is.
+Note: `sh:datatype` is used for literals, `sh:class` and `sh:node` are used for objects, and `sh:nodeKind` is used to take a term as it is.
+
+**Nested node shapes.** `sh:class` needs a class: a shape with that `sh:targetClass`, and typically an `rdf:type` in the data. Configuration objects often have neither, so a property can refer to a node shape directly with `sh:node`. That shape needs no `sh:targetClass`, nor even an `rdf:type`, and the value needs no type either:
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Fetcher>;
+  sh:property [
+    sh:name "options";
+    sh:path <options>;
+    sh:node <OptionsShape>;   # The options are read with this node shape
+    sh:maxCount 1;
+  ].
+
+<OptionsShape> a sh:NodeShape;
+  sh:property [
+    sh:name "method";
+    sh:path <method>;
+    sh:datatype xsd:string;
+    sh:defaultValue "GET";
+    sh:maxCount 1;
+  ].
+```
+
+`<fetcher> a <Fetcher>; <options> [ <method> "POST" ].` extracts to `{ "options": { "method": "POST" } }`.
+
+* The node shape may also be a blank node, written inline: `sh:node [ sh:property [ ... ] ]`.
+* Its lens is in `lenses`, keyed by the shape itself, and `extractShapes` lists these shapes in `nodeShapes`. An `apply` function keyed by the shape post-processes its values, like one keyed by a class.
+* Defaults work as for `sh:class`: `sh:defaultValue [ ]` on the property gives an object with the defaults of the node shape.
+* A node shape with no triples at all, a typo for example, is not defined: a value for the property fails to parse.
 
 * `sh:minCount` tells rdf-lens that this property is required, and will fail to parse an object that does not adhere to the shape.
 * `sh:maxCount` tells rdf-lens whether or not to expect multiple objects. If this is not set or is bigger than 1, the Javascript object will have an array as its value.
@@ -202,7 +231,7 @@ A default is held to `sh:nodeKind` and converted with `sh:codeType` like a value
   ].
 ```
 
-* All six node kinds are supported: `sh:IRI`, `sh:BlankNode`, `sh:Literal`, `sh:BlankNodeOrIRI`, `sh:BlankNodeOrLiteral` and `sh:IRIOrLiteral`. A value of another kind fails to parse, like a cardinality violation, with an error naming the property and the value. The kind is also checked next to `sh:class`.
+* All six node kinds are supported: `sh:IRI`, `sh:BlankNode`, `sh:Literal`, `sh:BlankNodeOrIRI`, `sh:BlankNodeOrLiteral` and `sh:IRIOrLiteral`. A value of another kind fails to parse, like a cardinality violation, with an error naming the property and the value. The kind is also checked next to `sh:node` and `sh:class`.
 * Either can be used alone: `sh:nodeKind` hands you the term, `sh:codeType` converts any term (rdf-lens warns when that is a blank node, which only has its label to convert).
 * `sh:codeType` is one of `xsd:string`, `xsd:integer`, `xsd:decimal`, `xsd:float`, `xsd:double`, `xsd:boolean`, `xsd:dateTime`, `xsd:anyURI` or `rdfl:Term`. `xsd:anyURI` gives an IRI, from an IRI or from a string holding an absolute IRI, so `sh:nodeKind sh:IRIOrLiteral; sh:codeType xsd:anyURI` accepts `<https://example.org>` and `"https://example.org"` alike. A string needs a scheme of two or more characters and is not a host and port, so `C:\data` and `localhost:8080` are no IRIs.
 * `sh:codeType rdfl:Term` converts nothing: it hands back the term the parser produced, instead of rebuilding it with this library's data factory. `rdfl:Term` is an rdf-lens extension, not a datatype.
@@ -213,9 +242,10 @@ A default is held to `sh:nodeKind` and converted with `sh:codeType` like a value
 **Which one applies.** The first of these a property has decides how it is extracted:
 
 1. `sh:codeType`: the term, checked against `sh:nodeKind` and converted with the code type. It goes before `sh:class`, as SHACL 1.2 asks tools to prefer it over the type they would derive from the constraints, so `sh:class ex:Pipeline; sh:codeType xsd:anyURI` gives the IRI of the pipeline instead of a nested object. `sh:datatype` describes the data, so it may differ: `sh:datatype xsd:integer; sh:codeType xsd:string` reads `4` as `"4"`.
-2. `sh:class`: a nested object, built with the shape of that class.
-3. `sh:nodeKind`: the term, checked against the kind, and converted with `sh:datatype` when one is given (`sh:datatype xsd:iri` is read as `xsd:anyURI` here). This warns, suggesting `sh:codeType` instead: for `sh:datatype xsd:iri` when the shape is read, for a converting datatype such as `xsd:string` the first time it is given an IRI or a blank node.
-4. `sh:datatype`: the value converted with that datatype.
+2. `sh:node`: a nested object, built with that node shape.
+3. `sh:class`: a nested object, built with the shape of that class.
+4. `sh:nodeKind`: the term, checked against the kind, and converted with `sh:datatype` when one is given (`sh:datatype xsd:iri` is read as `xsd:anyURI` here). This warns, suggesting `sh:codeType` instead: for `sh:datatype xsd:iri` when the shape is read, for a converting datatype such as `xsd:string` the first time it is given an IRI or a blank node.
+5. `sh:datatype`: the value converted with that datatype.
 
 > [!WARNING]
 > `sh:datatype` describes literals, but rdf-lens used it on any term, so `sh:datatype xsd:string` turns IRIs and blank nodes into strings and `sh:datatype xsd:iri` (not an actual datatype) turns any term into an IRI. Both still work, but log a warning naming the property, its path and its shape, the first time they are given a term they should not describe, once per kind of term, as the replacement depends on it:
