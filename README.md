@@ -281,6 +281,7 @@ Not checked, no shape describes them: <https://example.org/Writer>
 * Without data it finds shapes that cannot be read, naming every property at fault, an unsupported `sh:codeType` or `sh:nodeKind`, and `sh:datatype xsd:iri`.
 * With data it also extracts every node typed with a target class, or a subclass of one, and finds what depends on the data: `sh:datatype` given IRIs or blank nodes, the exact replacement for `sh:datatype xsd:iri`, and values that do not fit their shape. Pass example data, a pipeline using a processor for example, next to the shapes.
 * A class used with `sh:class` that no shape describes, like one a framework provides a lens for, is taken as is and listed as not checked.
+* Node shapes used with `sh:node` are read too, and a node shape that is not defined is an error on the property that refers to it.
 * It exits with 1 when it finds something, so it fits in CI, and with 2 when it cannot run. `--no-imports` reads only the given files.
 
 The same check is available in code, to run in a test for example: `checkShapes(quads)` returns the findings, each with its level, message, property shape and the data node it was found on.
