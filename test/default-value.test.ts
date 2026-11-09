@@ -39,7 +39,6 @@ describe("sh:defaultValue", () => {
   sh:property [
     sh:name "name";
     sh:path ex:name;
-    sh:minCount 1;
     sh:maxCount 1;
     sh:datatype xsd:string;
     sh:defaultValue "ajuvercr";
@@ -148,7 +147,6 @@ ${meShape}
     sh:name "friend";
     sh:path ex:friend;
     sh:class ex:Me;
-    sh:minCount 1;
     sh:maxCount 1;
     sh:defaultValue ${defaultValue};
   ].
@@ -255,6 +253,47 @@ ${meShape}
         });
     });
 
+    describe("sh:minCount is not satisfied by a default", () => {
+        const requiredShape = (constraint: string) => `
+[] a sh:NodeShape;
+  sh:targetClass ex:Me;
+  sh:property [
+    sh:name "nickname";
+    sh:path ex:nickname;
+    sh:datatype xsd:string;
+    sh:minCount 1;
+    ${constraint}
+  ].
+`;
+
+        test("A required value that is missing is an error", () => {
+            expect(() =>
+                extract(
+                    requiredShape('sh:maxCount 1; sh:defaultValue "ajuvercr";'),
+                    "<foobar> a ex:Me.",
+                ),
+            ).toThrow("Field is not defined and required");
+        });
+
+        test("A required multi valued property without values is an error", () => {
+            expect(() =>
+                extract(
+                    requiredShape('sh:defaultValue ( "ajuvercr" "semssie" );'),
+                    "<foobar> a ex:Me.",
+                ),
+            ).toThrow("Mininum Count violation");
+        });
+
+        test("A required value that is present is used", () => {
+            expect(
+                extract(
+                    requiredShape('sh:maxCount 1; sh:defaultValue "ajuvercr";'),
+                    '<foobar> a ex:Me; ex:nickname "semssie".',
+                ),
+            ).toEqual({ nickname: "semssie" });
+        });
+    });
+
     describe("with sh:nodeKind and sh:codeType", () => {
         const shapeWith = (constraint: string) => `
 [] a sh:NodeShape;
@@ -262,7 +301,6 @@ ${meShape}
   sh:property [
     sh:name "source";
     sh:path ex:source;
-    sh:minCount 1;
     sh:maxCount 1;
     ${constraint}
   ].

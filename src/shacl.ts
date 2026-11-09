@@ -103,6 +103,9 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
     // was defined in: the shapes graph. So a literal goes through the same
     // datatype conversion, and a node through the same class lens, picking up
     // that shape's own defaults in turn.
+    //
+    // A default is not data, so it cannot satisfy sh:minCount: the count is
+    // checked first, and a default only fills in a property that may be absent.
     const defaults = thenListExtract
         .or(noListExtract)
         .asMulti()
@@ -117,19 +120,19 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
                     return field.extract.execute(x, ctx);
                 }
 
-                const def = extractDefault(ctx);
-                if (def && def.length > 0) {
-                    return def[0];
-                }
-
                 if (minCount > 0) {
                     throw new LensError(
                         "Field is not defined and required",
                         ctx.lineage.slice(),
                     );
-                } else {
-                    return x;
                 }
+
+                const def = extractDefault(ctx);
+                if (def && def.length > 0) {
+                    return def[0];
+                }
+
+                return x;
             }),
         );
     }
@@ -138,7 +141,6 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
         .thenFlat(thenListExtract.or(noListExtract).asMulti())
         .thenAll(field.extract)
         .map((x) => x.filter((x) => x !== undefined))
-        .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
         .map((xs, ctx) => {
             if (xs.length < minCount) {
                 throw new LensError("Mininum Count violation", [
@@ -146,6 +148,10 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
                     ...ctx.lineage.slice(),
                 ]);
             }
+            return xs;
+        })
+        .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
+        .map((xs, ctx) => {
             if (xs.length > maxCount) {
                 throw new LensError("Maximum Count violation", [
                     { name: "found: " + xs.length, opts: [] },
