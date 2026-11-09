@@ -9,10 +9,67 @@ function termToString(term: Term): string {
     }
     return JSON.stringify(term.value);
 }
+
+/**
+ * Interface for indexed quad stores, matching the `getQuads` signature of
+ * `n3.Store` (and other stores following the RDF/JS `Store` convention).
+ * Looking up a pattern hits an index instead of scanning every quad, which
+ * matters once datasets grow beyond a couple of thousand quads.
+ */
+export interface QuadStore {
+    getQuads(
+        subject: Term | null,
+        predicate: Term | null,
+        object: Term | null,
+        graph: Term | null,
+    ): Quad[];
+}
+
+/**
+ * The quads a lens operates on: either a plain array, scanned linearly, or a
+ * QuadStore, queried through its indexes.
+ */
+export type Quads = Quad[] | QuadStore;
+
 /**
  * Type alias for a container with an ID and quads.
  */
-export type Cont<Q = Term> = { id: Q; quads: Quad[] };
+export type Cont<Q = Term> = { id: Q; quads: Quads };
+
+/**
+ * Type guard to check if quads is a QuadStore.
+ */
+export function isQuadStore(quads: Quads): quads is QuadStore {
+    return typeof (quads as QuadStore).getQuads === "function";
+}
+
+/**
+ * Finds all quads matching the given pattern, using the store indexes when
+ * quads is a QuadStore and a linear scan otherwise. Undefined parts of the
+ * pattern act as wildcards.
+ */
+export function matchQuads(
+    quads: Quads,
+    subject?: Term,
+    predicate?: Term,
+    object?: Term,
+): Quad[] {
+    if (isQuadStore(quads)) {
+        return quads.getQuads(
+            subject ?? null,
+            predicate ?? null,
+            object ?? null,
+            null,
+        );
+    }
+
+    return quads.filter(
+        (q) =>
+            (!subject || q.subject.equals(subject)) &&
+            (!predicate || q.predicate.equals(predicate)) &&
+            (!object || q.object.equals(object)),
+    );
+}
 
 export type Lineage = {
     name: string;
@@ -92,6 +149,16 @@ export class BasicLens<C, T> {
         });
     }
 
+    safe<O = undefined>(def: T): BasicLens<C, T | O> {
+        return new BasicLens((c, ctx) => {
+            try {
+                return this.execute(c, ctx);
+            } catch (_ex: unknown) {
+                return def;
+            }
+        });
+    }
+
     /**
      * Converts a lens returning an array into a multi-valued lens.
      * @returns Multi-valued lens for handling multiple results.
@@ -133,7 +200,7 @@ export class BasicLens<C, T> {
             return all.flatMap((x) => {
                 try {
                     return [x.execute(c, ctx.clone())];
-                } catch (ex: unknown) {
+                } catch (_ex: unknown) {
                     return [];
                 }
             });
@@ -155,8 +222,8 @@ export class BasicLens<C, T> {
                 for (let i = 0; i < others.length; i++) {
                     try {
                         return others[i].execute(c, ctx.clone());
-                    } catch (ex: unknown) {
-                        errors.push(ex);
+                    } catch (otherEx: unknown) {
+                        errors.push(otherEx);
                     }
                 }
             }
@@ -279,7 +346,7 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
                 try {
                     const o = next.execute(x, ctx.clone());
                     return [o];
-                } catch (ex: unknown) {
+                } catch (_ex: unknown) {
                     // TODO: at least something should happend with these errors
                     return [];
                 }
@@ -321,13 +388,13 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
             const out = [];
             try {
                 out.push(...this.execute(c, ctx.clone()));
-            } catch (ex: unknown) {
+            } catch (_ex: unknown) {
                 // TODO: at least something should happend with these errors
             }
             for (let i = 0; i < others.length; i++) {
                 try {
                     out.push(...others[i].execute(c, ctx.clone()));
-                } catch (ex: unknown) {
+                } catch (_ex: unknown) {
                     // TODO: at least something should happend with these errors
                 }
             }
@@ -374,9 +441,7 @@ export class BasicLensM<C, T> extends BasicLens<C, T[]> {
  */
 export function pred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM<Cont, Cont>(({ quads, id }) => {
-        const out = quads.filter(
-            (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
-        );
+        const out = matchQuads(quads, id, pred, undefined);
         return out.map((q) => ({ quads, id: q.object }));
     }).named("pred", pred && termToString(pred));
 }
@@ -388,9 +453,7 @@ export function pred(pred?: Term): BasicLensM<Cont, Cont> {
  */
 export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
     return new BasicLensM<Cont, Cont>(({ quads, id }) => {
-        const out = quads.filter(
-            (q) => q.object.equals(id) && (!pred || q.predicate.equals(pred)),
-        );
+        const out = matchQuads(quads, undefined, pred, id);
         return out.map((q) => ({ quads, id: q.subject }));
     }).named("invPred", pred && termToString(pred));
 }
@@ -402,9 +465,7 @@ export function invPred(pred?: Term): BasicLensM<Cont, Cont> {
  */
 export function predTriple(pred?: Term): BasicLensM<Cont, Cont<Quad>> {
     return new BasicLensM<Cont, Cont<Quad>>(({ quads, id }) => {
-        const out = quads.filter(
-            (q) => q.subject.equals(id) && (!pred || q.predicate.equals(pred)),
-        );
+        const out = matchQuads(quads, id, pred, undefined);
         return out.map((q) => ({ quads, id: q }));
     }).named("predTriple");
 }
@@ -436,9 +497,9 @@ export function unique(): BasicLensM<Cont[], Cont> {
  * Extracts all subjects from a set of quads into Cont containers.
  * @returns Multi-valued lens over unique subjects.
  */
-export function subjects(): BasicLensM<Quad[], Cont> {
-    return new BasicLensM<Quad[], Cont>((quads) => {
-        return quads.map((x) => ({ id: x.subject, quads }));
+export function subjects(): BasicLensM<Quads, Cont> {
+    return new BasicLensM<Quads, Cont>((quads) => {
+        return matchQuads(quads).map((x) => ({ id: x.subject, quads }));
     }).named("subjects");
 }
 
@@ -453,16 +514,12 @@ export function match(
     subject: Term | undefined,
     predicate: Term | undefined,
     object: Term | undefined,
-): BasicLensM<Quad[], Cont<Quad>> {
-    return new BasicLensM<Quad[], Cont<Quad>>((quads) => {
-        return quads
-            .filter(
-                (x) =>
-                    (!subject || x.subject.equals(subject)) &&
-                    (!predicate || x.predicate.equals(predicate)) &&
-                    (!object || x.object.equals(object)),
-            )
-            .map((id) => ({ id, quads }));
+): BasicLensM<Quads, Cont<Quad>> {
+    return new BasicLensM<Quads, Cont<Quad>>((quads) => {
+        return matchQuads(quads, subject, predicate, object).map((id) => ({
+            id,
+            quads,
+        }));
     }).named("match", {
         subject: subject && termToString(subject),
         predicate: predicate && termToString(predicate),
