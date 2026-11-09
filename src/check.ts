@@ -28,7 +28,7 @@ export type Finding = {
  */
 export type CheckReport = {
     findings: Finding[];
-    /** Node shapes with a target class */
+    /** Node shapes with a target class, or referred to with sh:node */
     shapes: number;
     /** Data nodes extracted with those shapes */
     focusNodes: number;
@@ -90,6 +90,10 @@ export function checkShapes(quads: Quad[]): CheckReport {
                 )
                 .map((q) => q.subject),
         ).filter((shape) => objects(shape, SHACL.targetClass).length > 0);
+        // Node shapes a property refers to with sh:node, typed or not
+        const referred = unique(objects(undefined, SHACL.node)).filter(
+            (shape) => !nodeShapes.some((x) => x.equals(shape)),
+        );
 
         const described = new Set([
             ...BUILT_IN,
@@ -109,13 +113,36 @@ export function checkShapes(quads: Quad[]): CheckReport {
         // extractShapes skips a node shape it cannot read, and stops at the
         // first property it cannot read: read each property on its own, in a
         // node shape of its own, to tell what is wrong with every one of them
-        const read = new Set(shapes.shapes.map((shape) => shape.id));
+        const read = new Set(
+            [...shapes.shapes, ...shapes.nodeShapes].map((shape) => shape.id),
+        );
         const readShape = extractShape(shapes.lenses, shapes.subClasses, {});
-        for (const shape of nodeShapes) {
+        for (const shape of referred) {
+            if (quads.some((q) => q.subject.equals(shape))) continue;
+            for (const property of unique(
+                quads
+                    .filter(
+                        (q) =>
+                            q.predicate.equals(SHACL.node) &&
+                            q.object.equals(shape),
+                    )
+                    .map((q) => q.subject),
+            )) {
+                findings.push({
+                    level: "error",
+                    message: `${describeShapeProperty(property, quads)} refers to the node shape ${termToString(shape)}, which is not defined`,
+                    property,
+                });
+            }
+        }
+        for (const shape of [...nodeShapes, ...referred]) {
             if (read.has(shape.value)) continue;
             const targets = objects(shape, SHACL.targetClass)
                 .map(termToString)
                 .join(", ");
+            const which = targets
+                ? `The shape for ${targets}`
+                : `The node shape ${termToString(shape)}`;
             for (const property of unique(objects(shape, SHACL.property))) {
                 const probe = df.blankNode();
                 try {
@@ -141,7 +168,7 @@ export function checkShapes(quads: Quad[]): CheckReport {
                         : `${describeShapeProperty(property, quads)}: ${describeError(ex)}`;
                     findings.push({
                         level: "error",
-                        message: `The shape for ${targets} cannot be read: ${reason}`,
+                        message: `${which} cannot be read: ${reason}`,
                         property,
                     });
                 }
@@ -196,7 +223,7 @@ export function checkShapes(quads: Quad[]): CheckReport {
 
         return {
             findings: uniqueFindings(findings),
-            shapes: nodeShapes.length,
+            shapes: nodeShapes.length + referred.length,
             focusNodes,
             unchecked,
         };
@@ -248,13 +275,14 @@ function missingFrom(
     }
     if (
         !has(
+            SHACL.node,
             SHACL.class,
             SHACL.nodeKind,
             SHACL.custom("codeType"),
             SHACL.datatype,
         )
     ) {
-        return "sh:class, sh:nodeKind, sh:codeType or sh:datatype";
+        return "sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype";
     }
 }
 

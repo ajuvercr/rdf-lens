@@ -994,7 +994,9 @@ function checkCodeType(
 
 /**
  * describeProperty names a property in warnings and errors, with the target
- * class of its node shape, as a path alone may be shared by many shapes.
+ * class of its node shape, as a path alone may be shared by many shapes. A
+ * node shape without a target class, like one used with sh:node, is named by
+ * its own IRI.
  */
 const describeProperty: BasicLens<Cont, string> = pred(
     SHACL.custom("codeIdentifier"),
@@ -1006,13 +1008,17 @@ const describeProperty: BasicLens<Cont, string> = pred(
         invPred(SHACL.property)
             .thenFlat(pred(SHACL.targetClass))
             .one(undefined),
+        invPred(SHACL.property).one(undefined),
     )
-    .map(([code, name, path, clazz]) => {
+    .map(([code, name, path, clazz, shape]) => {
         const n = (code || name)?.id.value;
+        const named =
+            clazz?.id ??
+            (shape?.id.termType === "NamedNode" ? shape.id : undefined);
         return (
             (n ? "property " + JSON.stringify(n) : "a property") +
             (path ? " (path " + termToString(path.id) : " (") +
-            (clazz ? ", shape " + termToString(clazz.id) : "") +
+            (named ? ", shape " + termToString(named) : "") +
             ")"
         );
     });
@@ -1064,53 +1070,66 @@ function extractProperty(
     const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 
-    // A nested object, built with the shape of its class, under the node kind
+    // A nested object, built with the lens cached under key, under the node
+    // kind. The lens is looked up when a value is extracted, so the shape it
+    // comes from may be read after this property.
+    const nestedLens = (
+        key: string,
+        kind: NodeKind,
+        missing: { message: string; name: string },
+    ): BasicLens<Cont, unknown> =>
+        new BasicLens<Cont, unknown>(({ id, quads }, ctx) => {
+            if (kind.problem) {
+                throw new LensError(kind.problem, ctx.lineage.slice());
+            }
+            if (!kind.allows(id.termType)) {
+                throw kind.violation(id, ctx);
+            }
+            const lens = cache[key];
+            if (!lens) {
+                throw new LensError(missing.message, [
+                    { name: missing.name + key, opts: Object.keys(cache) },
+                    ...ctx.lineage.slice(),
+                ]);
+            }
+            if (apply[key]) {
+                return lens.map(apply[key]).execute({ id, quads }, ctx);
+            } else {
+                return lens.execute({ id, quads }, ctx);
+            }
+        });
+
+    const kindOf = (kindTerm: Cont | undefined, where: Where): NodeKind => {
+        const kind = nodeKind(kindTerm?.id, where);
+        if (kind.problem) warn("rdf-lens: " + kind.problem, where.property);
+        return kind;
+    };
+
+    // A nested object, built with the shape of its class
     const clazzLens = (where: Where): BasicLens<Cont, Extract> =>
         field(SHACL.class, "clazz")
             .and(pred(SHACL.nodeKind).one(undefined))
-            .map(([{ clazz: expected_class }, kindTerm]) => {
-                const kind = nodeKind(kindTerm?.id, where);
-                if (kind.problem)
-                    warn("rdf-lens: " + kind.problem, where.property);
+            .map(([{ clazz: expected_class }, kindTerm]) => ({
+                // We did not find a type, so use the expected class lens
+                extract: nestedLens(expected_class, kindOf(kindTerm, where), {
+                    message: "Tried extracting class, but no shape was defined",
+                    name: "Found type: ",
+                }).named("extracting class", expected_class),
+            }));
 
-                return {
-                    extract: new BasicLens<Cont, unknown>(
-                        ({ id, quads }, ctx) => {
-                            if (kind.problem) {
-                                throw new LensError(
-                                    kind.problem,
-                                    ctx.lineage.slice(),
-                                );
-                            }
-                            if (!kind.allows(id.termType)) {
-                                throw kind.violation(id, ctx);
-                            }
-                            // We did not find a type, so use the expected class lens
-                            const lens = cache[expected_class];
-                            if (!lens) {
-                                throw new LensError(
-                                    "Tried extracting class, but no shape was defined",
-                                    [
-                                        {
-                                            name:
-                                                "Found type: " + expected_class,
-                                            opts: Object.keys(cache),
-                                        },
-                                        ...ctx.lineage.slice(),
-                                    ],
-                                );
-                            }
-                            if (apply[expected_class]) {
-                                return lens
-                                    .map(apply[expected_class])
-                                    .execute({ id, quads }, ctx);
-                            } else {
-                                return lens.execute({ id, quads }, ctx);
-                            }
-                        },
-                    ).named("extracting class", expected_class),
-                };
-            });
+    // A nested object, built with the node shape it refers to. Unlike
+    // sh:class, the value needs no type, and the shape no sh:targetClass.
+    const nodeLens = (where: Where): BasicLens<Cont, Extract> =>
+        pred(SHACL.node)
+            .one()
+            .and(pred(SHACL.nodeKind).one(undefined))
+            .map(([{ id: shape }, kindTerm]) => ({
+                extract: nestedLens(shape.value, kindOf(kindTerm, where), {
+                    message:
+                        "Tried extracting a node shape, but it could not be read",
+                    name: "Node shape: ",
+                }).named("extracting node shape", shape.value),
+            }));
 
     // Keep the container, not just the term: the default may be a node whose
     // properties live in the shapes graph, and those quads travel with it.
@@ -1137,7 +1156,7 @@ function extractProperty(
                 if (!kindTerm && !codeType) {
                     if (!datatype) {
                         throw new LensError(
-                            "Expected sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
+                            "Expected sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
                             ctx.lineage.slice(),
                         );
                     }
@@ -1199,11 +1218,12 @@ function extractProperty(
 
         // SHACL 1.2: tools that would derive the type from the constraints
         // use sh:codeType instead, so it goes before the nested object
-        // sh:class would build
+        // sh:node or sh:class would build. sh:node names the shape itself,
+        // so it goes before sh:class, which only names the type of the value.
         const codeType = codeTypeOf.execute(c, ctx.clone());
         const extract = codeType
             ? leafLens(where, codeType)
-            : clazzLens(where).or(leafLens(where));
+            : nodeLens(where).or(clazzLens(where), leafLens(where));
 
         return pathLens
             .and(nameLens, minCount, maxCount, defaultValueLens, extract)
@@ -1433,10 +1453,34 @@ export function extractShape(
 }
 
 /**
+ * extractNodeShape extracts a node shape that a property refers to with
+ * sh:node. Such a shape needs no sh:targetClass, nor even an rdf:type: its
+ * lens is keyed by the shape itself, and its ty is the shape too.
+ */
+export function extractNodeShape(
+    cache: Cache,
+    subclasses: { [label: string]: string },
+    apply: ApplyDict,
+): BasicLens<Cont, Shape> {
+    const idLens = empty<Cont>().map(({ id }) => ({ id: id.value, ty: id }));
+    const descriptionLens = optionalField(SHACL.description, "description");
+    const fields = pred(SHACL.property)
+        .thenAll(extractProperty(cache, subclasses, apply))
+        .map((fields) => ({ fields }));
+
+    return idLens
+        .and(descriptionLens, fields)
+        .map((xs) => <Shape>Object.assign({}, ...xs));
+}
+
+/**
  * Shapes bundles the extracted shapes, their lenses, and subclass hierarchy for downstream use.
  */
 export type Shapes = {
+    /** The node shapes with a target class, one for each target class */
     shapes: Shape[];
+    /** The node shapes referred to with sh:node, keyed by themselves in lenses */
+    nodeShapes: Shape[];
     lenses: Cache;
     subClasses: SubClasses;
 };
@@ -1488,5 +1532,33 @@ export function extractShapes(
         lenses.push(lens);
     }
 
-    return { lenses: cache, shapes, subClasses };
+    // A node shape referred to with sh:node gets a lens keyed by the shape
+    // itself. Like a shape with a target class, one that cannot be read is
+    // skipped, and fails once a property refers to it.
+    const readNodeShape = extractNodeShape(cache, subClasses, apply);
+    const seen = new Set<string>();
+    const nodeShapes: Shape[] = [];
+    for (const q of quads) {
+        if (!q.predicate.equals(SHACL.node)) continue;
+        const key = q.object.termType + " " + q.object.value;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // A shape without any triples is not defined, a typo for example,
+        // rather than a shape without constraints
+        if (!quads.some((x) => x.subject.equals(q.object))) continue;
+        try {
+            nodeShapes.push(
+                readNodeShape.execute({ id: q.object, quads }, createContext()),
+            );
+        } catch {
+            // Skipped, like a shape with a target class that cannot be read
+        }
+    }
+
+    for (const shape of nodeShapes) {
+        // A shape that is also its own target class already has this lens
+        cache[shape.id] ??= toLens(shape);
+    }
+
+    return { lenses: cache, shapes, nodeShapes, subClasses };
 }

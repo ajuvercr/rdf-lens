@@ -134,7 +134,7 @@ _:iri sh:name "iri"; sh:path ex:iri; sh:datatype xsd:iri.
         expect(summary(report.findings)).toEqual([
             "error: The shape for <http://example.org/Thing> cannot be read: " +
                 'property "a" (path <http://example.org/a>, shape ' +
-                "<http://example.org/Thing>) has no sh:class, sh:nodeKind, " +
+                "<http://example.org/Thing>) has no sh:node, sh:class, sh:nodeKind, " +
                 "sh:codeType or sh:datatype",
             "error: The shape for <http://example.org/Thing> cannot be read: " +
                 "a property (path <http://example.org/b>, shape " +
@@ -164,6 +164,48 @@ _:iri sh:name "iri"; sh:path ex:iri; sh:datatype xsd:iri.
 
         expect(report.shapes).toBe(0);
         expect(report.findings).toEqual([]);
+    });
+
+    test("node shapes referred to with sh:node are read and counted", () => {
+        const report = check(`
+[] a sh:NodeShape; sh:targetClass ex:Thing; sh:property
+  [ sh:name "options"; sh:path ex:options; sh:node ex:OptionsShape; sh:maxCount 1 ].
+ex:OptionsShape a sh:NodeShape; sh:property
+  [ sh:name "size"; sh:path ex:size; sh:datatype xsd:integer; sh:maxCount 1 ].
+ex:a a ex:Thing; ex:options [ ex:size 4 ].
+`);
+
+        expect(report.findings).toEqual([]);
+        expect(report.shapes).toBe(2);
+        expect(report.focusNodes).toBe(1);
+    });
+
+    test("a node shape that cannot be read names every property at fault", () => {
+        const report = check(`
+[] a sh:NodeShape; sh:targetClass ex:Thing; sh:property
+  [ sh:name "options"; sh:path ex:options; sh:node ex:OptionsShape; sh:maxCount 1 ].
+ex:OptionsShape sh:property [ sh:name "size"; sh:path ex:size ].
+`);
+
+        expect(summary(report.findings)).toEqual([
+            "error: The node shape <http://example.org/OptionsShape> cannot be " +
+                'read: property "size" (path <http://example.org/size>, shape ' +
+                "<http://example.org/OptionsShape>) has no sh:node, sh:class, " +
+                "sh:nodeKind, sh:codeType or sh:datatype",
+        ]);
+    });
+
+    test("a node shape that is not defined is an error", () => {
+        const report = check(`
+[] a sh:NodeShape; sh:targetClass ex:Thing; sh:property
+  [ sh:name "options"; sh:path ex:options; sh:node ex:Typo; sh:maxCount 1 ].
+`);
+
+        expect(summary(report.findings)).toEqual([
+            'error: property "options" (path <http://example.org/options>, ' +
+                "shape <http://example.org/Thing>) refers to the node shape " +
+                "<http://example.org/Typo>, which is not defined",
+        ]);
     });
 
     test("puts back the warning handler it replaces", () => {
