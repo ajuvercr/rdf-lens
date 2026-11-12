@@ -396,6 +396,115 @@ describe("Environment variables", () => {
         ).toBe(IRI);
     });
 
+    describe("envReplace takes the type of an untyped variable from the shapes", () => {
+        const replacedValue = (quads: Quad[], shapes?: Quad[]) =>
+            envReplace(shapes)
+                .execute(quads)
+                .find((q) => q.predicate.value === "http://example.org/value")!
+                .object;
+
+        test("a literal of the sh:datatype of the property", () => {
+            process.env["RDF_LENS_TEST"] = "42";
+            expect(
+                replacedValue(
+                    parse(
+                        shapeWith("sh:datatype xsd:integer;") +
+                            env("RDF_LENS_TEST"),
+                    ),
+                ),
+            ).toMatchObject({
+                termType: "Literal",
+                value: "42",
+                datatype: { value: XSD.integer },
+            });
+        });
+
+        test("an IRI when the sh:nodeKind allows one", () => {
+            process.env["RDF_LENS_TEST"] = IRI;
+            expect(
+                replacedValue(
+                    parse(
+                        shapeWith("sh:nodeKind sh:IRI;") + env("RDF_LENS_TEST"),
+                    ),
+                ),
+            ).toMatchObject({ termType: "NamedNode", value: IRI });
+        });
+
+        test("a string when the sh:nodeKind allows an IRI but the value is none", () => {
+            process.env["RDF_LENS_TEST"] = "localhost:8080";
+            expect(
+                replacedValue(
+                    parse(
+                        shapeWith("sh:nodeKind sh:IRIOrLiteral;") +
+                            env("RDF_LENS_TEST"),
+                    ),
+                ),
+            ).toMatchObject({
+                termType: "Literal",
+                datatype: { value: XSD.string },
+            });
+        });
+
+        test("the variable's own rdfl:datatype before the shapes", () => {
+            process.env["RDF_LENS_TEST"] = "42";
+            expect(
+                replacedValue(
+                    parse(
+                        shapeWith("sh:datatype xsd:integer;") +
+                            env("RDF_LENS_TEST", "xsd:decimal"),
+                    ),
+                ),
+            ).toMatchObject({
+                datatype: { value: "http://www.w3.org/2001/XMLSchema#decimal" },
+            });
+        });
+
+        test("only from the shapes that target the focus node", () => {
+            process.env["RDF_LENS_TEST"] = "42";
+            const other = `
+[] a sh:NodeShape;
+  sh:targetClass ex:Other;
+  sh:property [ sh:path ex:value; sh:datatype xsd:boolean ].
+`;
+            expect(
+                replacedValue(
+                    parse(
+                        shapeWith("sh:datatype xsd:integer;") +
+                            other +
+                            env("RDF_LENS_TEST"),
+                    ),
+                ),
+            ).toMatchObject({ datatype: { value: XSD.integer } });
+        });
+
+        test("a string when untargeted shapes disagree", () => {
+            process.env["RDF_LENS_TEST"] = "42";
+            const nested = (datatype: string) => `
+[] a sh:NodeShape;
+  sh:property [ sh:path ex:value; sh:datatype ${datatype} ].
+`;
+            expect(
+                replacedValue(
+                    parse(
+                        nested("xsd:integer") +
+                            nested("xsd:boolean") +
+                            '[] ex:value [ a rdfl:EnvVariable; rdfl:envKey "RDF_LENS_TEST" ].',
+                    ),
+                ),
+            ).toMatchObject({ datatype: { value: XSD.string } });
+        });
+
+        test("from shapes given apart from the data", () => {
+            process.env["RDF_LENS_TEST"] = "42";
+            expect(
+                replacedValue(
+                    parse(env("RDF_LENS_TEST")),
+                    parse(shapeWith("sh:datatype xsd:integer;")),
+                ),
+            ).toMatchObject({ datatype: { value: XSD.integer } });
+        });
+    });
+
     test("envReplace puts a typed literal in place of a typed variable", () => {
         process.env["RDF_LENS_TEST"] = "42";
         const replaced = envReplace().execute(

@@ -9,9 +9,7 @@ import {
     invPred,
     LensContext,
     LensError,
-    match,
     pred,
-    subject,
     subjects,
     unique,
 } from "./lens";
@@ -754,23 +752,130 @@ function envValue(): BasicLens<Cont, EnvValue> {
 }
 
 /**
- * envTerm resolves an rdfl:EnvVariable node to the term that stands in for it:
- * an IRI when its rdfl:datatype is xsd:anyURI or xsd:iri, a literal of its
- * rdfl:datatype otherwise, and a string literal without one, so envReplace
- * always puts a term in the data.
- * Throws if variable is missing and no default is set.
+ * envTerm turns the string an rdfl:EnvVariable holds into the term that stands
+ * in for it. The variable's own rdfl:datatype decides first: an IRI for
+ * xsd:anyURI or xsd:iri, a literal of that datatype otherwise. Without one, the
+ * property shapes for the property that refers to the variable decide, so that
+ * the data conforms to them as it would had the value been written in place:
+ * a literal of their sh:datatype when they agree on one, an IRI when their
+ * sh:nodeKind allows one and the value is an absolute IRI, as extraction reads
+ * an environment variable, and a string literal otherwise.
  */
-function envTerm(): BasicLens<Cont, { key: string; term: Term }> {
-    return envValue().map(({ key, value, dt }) => {
-        if (dt?.termType !== "NamedNode") return { key, term: literal(value) };
+function envTerm(
+    { value, dt }: EnvValue,
+    shapes: Pick<PropertyHint, "datatypes" | "allowsIri">,
+): Term {
+    if (dt?.termType === "NamedNode") {
         if (
             dt.equals(XSD.terms.custom("anyURI")) ||
             dt.equals(XSD.terms.custom("iri"))
         ) {
-            return { key, term: namedNode(value) };
+            return namedNode(value);
         }
-        return { key, term: literal(value, dt) };
-    });
+        return literal(value, dt);
+    }
+    if (shapes.datatypes.length === 1) {
+        return literal(value, <NamedNode>shapes.datatypes[0]);
+    }
+    if (shapes.allowsIri && isAbsoluteIri(value)) {
+        return namedNode(value);
+    }
+    return literal(value);
+}
+
+/**
+ * What the property shapes for one property of one focus node say about the
+ * term it holds: the distinct sh:datatype values they declare, and whether
+ * they declare a sh:nodeKind that all allow an IRI.
+ */
+type PropertyHint = { datatypes: Term[]; allowsIri: boolean };
+
+/**
+ * propertyHint collects what the property shapes in `shapes` declare for the
+ * values of `predicate` on `focus`. It takes the property shapes of the node
+ * shapes that target the focus node, through sh:targetNode, sh:targetClass
+ * (following rdfs:subClassOf), sh:targetSubjectsOf or sh:targetObjectsOf.
+ * When none target it, as for a nested node reached through sh:node, it takes
+ * every property shape with that predicate as its path.
+ */
+function propertyHint(
+    shapes: Quad[],
+    data: Quad[],
+    focus: Term,
+    predicate: Term,
+): PropertyHint {
+    const objects = (quads: Quad[], s: Term, p: Term) =>
+        quads.filter((q) => q.subject.equals(s) && q.predicate.equals(p));
+
+    const classes: Term[] = objects(data, focus, RDF.terms.type).map(
+        (q) => q.object,
+    );
+    for (let i = 0; i < classes.length; i++) {
+        for (const q of [
+            ...objects(data, classes[i], RDFS.subClassOf),
+            ...objects(shapes, classes[i], RDFS.subClassOf),
+        ]) {
+            if (!classes.some((c) => c.equals(q.object)))
+                classes.push(q.object);
+        }
+    }
+
+    const targets = (shape: Term) =>
+        shapes.some(
+            (q) =>
+                q.subject.equals(shape) &&
+                ((q.predicate.equals(SHACL.targetNode) &&
+                    q.object.equals(focus)) ||
+                    (q.predicate.equals(SHACL.targetClass) &&
+                        classes.some((c) => c.equals(q.object))) ||
+                    (q.predicate.equals(SHACL.targetSubjectsOf) &&
+                        data.some(
+                            (d) =>
+                                d.subject.equals(focus) &&
+                                d.predicate.equals(q.object),
+                        )) ||
+                    (q.predicate.equals(SHACL.targetObjectsOf) &&
+                        data.some(
+                            (d) =>
+                                d.object.equals(focus) &&
+                                d.predicate.equals(q.object),
+                        ))),
+        );
+
+    const withPath = shapes
+        .filter(
+            (q) => q.predicate.equals(SHACL.path) && q.object.equals(predicate),
+        )
+        .map((q) => q.subject);
+    const owned = withPath.filter((property) =>
+        shapes.some(
+            (q) =>
+                q.predicate.equals(SHACL.property) &&
+                q.object.equals(property) &&
+                targets(q.subject),
+        ),
+    );
+    const properties = owned.length > 0 ? owned : withPath;
+
+    const datatypes: Term[] = [];
+    const kinds: Term[] = [];
+    for (const property of properties) {
+        for (const q of objects(shapes, property, SHACL.datatype)) {
+            if (!datatypes.some((d) => d.equals(q.object)))
+                datatypes.push(q.object);
+        }
+        kinds.push(
+            ...objects(shapes, property, SHACL.nodeKind).map((q) => q.object),
+        );
+    }
+    const allowsIri =
+        kinds.length > 0 &&
+        kinds.every((kind) =>
+            NODE_KINDS.some(
+                ([k, types]) => k.equals(kind) && types.includes("NamedNode"),
+            ),
+        );
+    return { datatypes, allowsIri };
 }
 
 /**
@@ -804,51 +909,47 @@ function remove_cbd(quads: Quad[], subject: Term) {
 }
 
 /**
- * envReplace replaces references to EnvVariables in quads with their resolved values, using remove_cbd to remove original references.
+ * envReplace replaces references to EnvVariables in quads with their resolved
+ * values, using remove_cbd to remove original references. A variable without
+ * an rdfl:datatype takes its type from the property shapes for the property
+ * that refers to it, read from `shapes`, or from the quads themselves when no
+ * shapes are given (see envTerm).
  * Returns a new quad array with replacements.
  */
-export function envReplace(): BasicLens<Quad[], Quad[]> {
-    const shouldReplace = empty<[Cont, Quad[]]>()
-        .map((x) => x[0])
-        .then(
-            envTerm()
-                .map((x) => x.term)
-                .and(empty<Cont>().map((x) => x.id)),
-        )
-        .map(([value, id]) => ({
-            value,
-            id,
-        }));
+export function envReplace(shapes?: Quad[]): BasicLens<Quad[], Quad[]> {
+    const value = envValue();
+    return new BasicLens<Quad[], Quad[]>((input, ctx) => {
+        const shapeQuads = shapes ?? input;
+        let quads = input.slice();
+        const variables = input
+            .filter(
+                (q) =>
+                    q.predicate.equals(RDF.terms.type) &&
+                    q.object.equals(RDFL.terms.EnvVariable),
+            )
+            .map((q) => q.subject);
 
-    const reduce: BasicLens<[Cont, Quad[]], Quad[]> = shouldReplace
-        .and(empty<[Cont, Quad[]]>().map((x) => x[1]))
-        .map(([{ value, id }, quads]) => {
-            return remove_cbd(
+        for (const id of variables) {
+            const resolved = value.execute({ id, quads }, ctx);
+            quads = remove_cbd(
                 quads.map((q) => {
-                    if (q.object.equals(id)) {
-                        return quad(
-                            q.subject,
-                            q.predicate,
-                            <Quad_Object>value,
-                            q.graph,
-                        );
-                    } else {
-                        return q;
-                    }
+                    if (!q.object.equals(id)) return q;
+                    const term = envTerm(
+                        resolved,
+                        propertyHint(shapeQuads, input, q.subject, q.predicate),
+                    );
+                    return quad(
+                        q.subject,
+                        q.predicate,
+                        <Quad_Object>term,
+                        q.graph,
+                    );
                 }),
                 id,
             );
-        });
-
-    const actualReplace = match(
-        undefined,
-        RDF.terms.type,
-        RDFL.terms.EnvVariable,
-    )
-        .thenAll(subject)
-        .reduce(reduce, empty<Quad[]>());
-
-    return sliced<Quad>().then(actualReplace);
+        }
+        return quads;
+    });
 }
 
 /**
