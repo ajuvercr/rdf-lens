@@ -26,6 +26,7 @@ export const SHACL = createTermNamespace(
     "path",
     "class",
     "node",
+    "memberShape",
     "name",
     "description",
     "defaultValue",

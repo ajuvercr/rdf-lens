@@ -91,9 +91,10 @@ export function checkShapes(quads: Quad[]): CheckReport {
                 .map((q) => q.subject),
         ).filter((shape) => objects(shape, SHACL.targetClass).length > 0);
         // Node shapes a property refers to with sh:node, typed or not
-        const referred = unique(objects(undefined, SHACL.node)).filter(
-            (shape) => !nodeShapes.some((x) => x.equals(shape)),
-        );
+        const referred = unique([
+            ...objects(undefined, SHACL.node),
+            ...objects(undefined, SHACL.memberShape),
+        ]).filter((shape) => !nodeShapes.some((x) => x.equals(shape)));
 
         const described = new Set([
             ...BUILT_IN,
@@ -123,7 +124,8 @@ export function checkShapes(quads: Quad[]): CheckReport {
                 quads
                     .filter(
                         (q) =>
-                            q.predicate.equals(SHACL.node) &&
+                            (q.predicate.equals(SHACL.node) ||
+                                q.predicate.equals(SHACL.memberShape)) &&
                             q.object.equals(shape),
                     )
                     .map((q) => q.subject),
@@ -275,6 +277,7 @@ function missingFrom(
     }
     if (
         !has(
+            SHACL.memberShape,
             SHACL.node,
             SHACL.class,
             SHACL.nodeKind,
@@ -282,7 +285,7 @@ function missingFrom(
             SHACL.datatype,
         )
     ) {
-        return "sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype";
+        return "sh:memberShape, sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype";
     }
 }
 
