@@ -134,7 +134,7 @@ _:iri sh:name "iri"; sh:path ex:iri; sh:datatype xsd:iri.
         expect(summary(report.findings)).toEqual([
             "error: The shape for <http://example.org/Thing> cannot be read: " +
                 'property "a" (path <http://example.org/a>, shape ' +
-                "<http://example.org/Thing>) has no sh:node, sh:class, sh:nodeKind, " +
+                "<http://example.org/Thing>) has no sh:memberShape, sh:node, sh:class, sh:nodeKind, " +
                 "sh:codeType or sh:datatype",
             "error: The shape for <http://example.org/Thing> cannot be read: " +
                 "a property (path <http://example.org/b>, shape " +
@@ -190,7 +190,7 @@ ex:OptionsShape sh:property [ sh:name "size"; sh:path ex:size ].
         expect(summary(report.findings)).toEqual([
             "error: The node shape <http://example.org/OptionsShape> cannot be " +
                 'read: property "size" (path <http://example.org/size>, shape ' +
-                "<http://example.org/OptionsShape>) has no sh:node, sh:class, " +
+                "<http://example.org/OptionsShape>) has no sh:memberShape, sh:node, sh:class, " +
                 "sh:nodeKind, sh:codeType or sh:datatype",
         ]);
     });

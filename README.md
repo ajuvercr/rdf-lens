@@ -239,13 +239,30 @@ A default is held to `sh:nodeKind` and converted with `sh:codeType` like a value
 * An `rdfl:EnvVariable` holds a string, so it becomes an IRI when the kind allows one and the value is an absolute IRI, a literal when the kind allows that, and an error otherwise.
 * An `rdfl:EnvVariable` whose variable is not set and that has no `rdfl:envDefault` fails to parse, with or without a node kind. `envReplace` puts a term in its place: an IRI for `rdfl:datatype xsd:anyURI` or `xsd:iri`, a literal of its `rdfl:datatype` otherwise, and a plain string literal without one.
 
+**Ordered values** with [`sh:memberShape`](https://w3c.github.io/data-shapes/shacl12-core/#MemberShapeConstraintComponent). The values of a property have no order in RDF, so a property whose order matters takes an RDF list. `sh:memberShape` from SHACL 1.2 Core says that the value is a list, and which node shape every member conforms to:
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Bucketizer>;
+  sh:property [
+    sh:name "strategies";
+    sh:path <strategy>;
+    sh:memberShape <StrategyShape>;
+    sh:minCount 1;
+    sh:maxCount 1;
+  ].
+```
+
+`<b> a <Bucketizer>; <strategy> ( [ <size> 3 ] [ <size> 1 ] ).` extracts to `{ "strategies": [ { "size": 3 }, { "size": 1 } ] }`. A value that is no list fails to parse, and `sh:nodeKind` constrains the list node itself. With `sh:class` or `sh:node` instead, a list is unrolled into separate values as before, but a SHACL engine then checks the list node itself against the class or shape, and rejects it.
+
 **Which one applies.** The first of these a property has decides how it is extracted:
 
 1. `sh:codeType`: the term, checked against `sh:nodeKind` and converted with the code type. It goes before `sh:class`, as SHACL 1.2 asks tools to prefer it over the type they would derive from the constraints, so `sh:class ex:Pipeline; sh:codeType xsd:anyURI` gives the IRI of the pipeline instead of a nested object. `sh:datatype` describes the data, so it may differ: `sh:datatype xsd:integer; sh:codeType xsd:string` reads `4` as `"4"`.
-2. `sh:node`: a nested object, built with that node shape.
-3. `sh:class`: a nested object, built with the shape of that class.
-4. `sh:nodeKind`: the term, checked against the kind, and converted with `sh:datatype` when one is given (`sh:datatype xsd:iri` is read as `xsd:anyURI` here). This warns, suggesting `sh:codeType` instead: for `sh:datatype xsd:iri` when the shape is read, for a converting datatype such as `xsd:string` the first time it is given an IRI or a blank node.
-5. `sh:datatype`: the value converted with that datatype.
+2. `sh:memberShape`: an array of the members of the RDF list, in order, each built with that node shape.
+3. `sh:node`: a nested object, built with that node shape.
+4. `sh:class`: a nested object, built with the shape of that class.
+5. `sh:nodeKind`: the term, checked against the kind, and converted with `sh:datatype` when one is given (`sh:datatype xsd:iri` is read as `xsd:anyURI` here). This warns, suggesting `sh:codeType` instead: for `sh:datatype xsd:iri` when the shape is read, for a converting datatype such as `xsd:string` the first time it is given an IRI or a blank node.
+6. `sh:datatype`: the value converted with that datatype.
 
 > [!WARNING]
 > `sh:datatype` describes literals, but rdf-lens used it on any term, so `sh:datatype xsd:string` turns IRIs and blank nodes into strings and `sh:datatype xsd:iri` (not an actual datatype) turns any term into an IRI. Both still work, but log a warning naming the property, its path and its shape, the first time they are given a term they should not describe, once per kind of term, as the replacement depends on it:
@@ -281,7 +298,7 @@ Not checked, no shape describes them: <https://example.org/Writer>
 * Without data it finds shapes that cannot be read, naming every property at fault, an unsupported `sh:codeType` or `sh:nodeKind`, and `sh:datatype xsd:iri`.
 * With data it also extracts every node typed with a target class, or a subclass of one, and finds what depends on the data: `sh:datatype` given IRIs or blank nodes, the exact replacement for `sh:datatype xsd:iri`, and values that do not fit their shape. Pass example data, a pipeline using a processor for example, next to the shapes.
 * A class used with `sh:class` that no shape describes, like one a framework provides a lens for, is taken as is and listed as not checked.
-* Node shapes used with `sh:node` are read too, and a node shape that is not defined is an error on the property that refers to it.
+* Node shapes used with `sh:node` or `sh:memberShape` are read too, and a node shape that is not defined is an error on the property that refers to it.
 * It exits with 1 when it finds something, so it fits in CI, and with 2 when it cannot run. `--no-imports` reads only the given files.
 
 The same check is available in code, to run in a test for example: `checkShapes(quads)` returns the findings, each with its level, message, property shape and the data node it was found on.

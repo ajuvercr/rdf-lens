@@ -78,6 +78,11 @@ export interface ShapeField {
      * reads the default's own properties (`sh:defaultValue [ ex:age 95 ]`).
      */
     defaultValue?: Cont;
+    /**
+     * Whether each value is an RDF list that extract handles as a whole, as
+     * for sh:memberShape, rather than a list whose members are values.
+     */
+    list?: boolean;
 }
 
 /**
@@ -98,15 +103,16 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
         ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
     );
     const noListExtract = empty<Cont>().map((x) => [x]);
+    // A list is a value of its own when extract handles the list
+    const values = field.list
+        ? noListExtract
+        : thenListExtract.or(noListExtract);
 
     // The default is extracted like any other value, but from the container it
     // was defined in: the shapes graph. So a literal goes through the same
     // datatype conversion, and a node through the same class lens, picking up
     // that shape's own defaults in turn.
-    const defaults = thenListExtract
-        .or(noListExtract)
-        .asMulti()
-        .thenAll(field.extract);
+    const defaults = values.asMulti().thenAll(field.extract);
     const extractDefault = (ctx: LensContext): unknown[] | undefined =>
         field.defaultValue && defaults.execute(field.defaultValue, ctx);
 
@@ -135,7 +141,7 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
     }
 
     return field.path
-        .thenFlat(thenListExtract.or(noListExtract).asMulti())
+        .thenFlat(values.asMulti())
         .thenAll(field.extract)
         .map((x) => x.filter((x) => x !== undefined))
         .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
@@ -1175,6 +1181,55 @@ function extractProperty(
         .one(undefined)
         .map((defaultValue) => (defaultValue ? { defaultValue } : {}));
 
+    // SHACL 1.2: each value is an RDF list, and every member conforms to the
+    // node shape. Code receives an array of the members, in order, each built
+    // with that node shape. sh:nodeKind constrains the list node itself.
+    const memberShapeLens = (where: Where): BasicLens<Cont, Extract> =>
+        pred(SHACL.memberShape)
+            .one()
+            .and(pred(SHACL.nodeKind).one(undefined))
+            .map(([{ id: shape }, kindTerm]) => {
+                const kind = kindOf(kindTerm, where);
+                const member = nestedLens(
+                    shape.value,
+                    nodeKind(undefined, where),
+                    {
+                        message:
+                            "Tried extracting a member shape, but it could not be read",
+                        name: "Member shape: ",
+                    },
+                ).named("extracting member shape", shape.value);
+                return {
+                    list: true,
+                    extract: new BasicLens<Cont, unknown>((c, ctx) => {
+                        if (kind.problem) {
+                            throw new LensError(
+                                kind.problem,
+                                ctx.lineage.slice(),
+                            );
+                        }
+                        if (!kind.allows(c.id.termType)) {
+                            throw kind.violation(c.id, ctx);
+                        }
+                        let members: Term[];
+                        try {
+                            members = RdfList.execute(c, ctx.clone());
+                        } catch {
+                            throw new LensError(
+                                `Expected an RDF list: ${where()} was given ${describeTerm(c.id)}`,
+                                [
+                                    { name: "found", opts: termToString(c.id) },
+                                    ...ctx.lineage.slice(),
+                                ],
+                            );
+                        }
+                        return members.map((id) =>
+                            member.execute({ id, quads: c.quads }, ctx.clone()),
+                        );
+                    }),
+                };
+            });
+
     // What a built-in lens hands code, such as the quads of rdfl:CBD, under
     // the node kind
     const builtInLens = (
@@ -1208,7 +1263,7 @@ function extractProperty(
                 if (!kindTerm && !codeType) {
                     if (!datatype) {
                         throw new LensError(
-                            "Expected sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
+                            "Expected sh:memberShape, sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
                             ctx.lineage.slice(),
                         );
                     }
@@ -1275,7 +1330,11 @@ function extractProperty(
         const codeType = codeTypeOf.execute(c, ctx.clone());
         let extract: BasicLens<Cont, Extract>;
         if (!codeType) {
-            extract = nodeLens(where).or(clazzLens(where), leafLens(where));
+            extract = memberShapeLens(where).or(
+                nodeLens(where),
+                clazzLens(where),
+                leafLens(where),
+            );
         } else if (isBuiltInLens(codeType)) {
             extract = builtInLens(where, codeType);
         } else {
@@ -1596,7 +1655,11 @@ export function extractShapes(
     const seen = new Set<string>();
     const nodeShapes: Shape[] = [];
     for (const q of quads) {
-        if (!q.predicate.equals(SHACL.node)) continue;
+        if (
+            !q.predicate.equals(SHACL.node) &&
+            !q.predicate.equals(SHACL.memberShape)
+        )
+            continue;
         const key = q.object.termType + " " + q.object.value;
         if (seen.has(key)) continue;
         seen.add(key);
