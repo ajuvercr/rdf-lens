@@ -494,6 +494,23 @@ const CODE_TYPES = [
 ].map((x) => XSD.terms.custom(x));
 
 /**
+ * The classes extractShapes provides lenses for itself. They tell rdf-lens
+ * what to hand code, rather than what the data is, so they belong in
+ * sh:codeType, which validation ignores, not in sh:class, which a SHACL engine
+ * reads as a type the value must have.
+ */
+const BUILT_IN_LENSES = [
+    RDFL.terms.CBD,
+    RDFL.terms.PathLens,
+    RDFL.terms.Context,
+    RDFL.terms.TypedExtract,
+];
+
+function isBuiltInLens(term: Term): boolean {
+    return BUILT_IN_LENSES.some((x) => x.equals(term));
+}
+
+/**
  * Rebuilds a term with this library's data factory, whichever parser made it.
  */
 function normalizeTerm(term: Term): Term {
@@ -604,7 +621,9 @@ function codeTypeProblem(
     if (NODE_KINDS.some(([k]) => codeType.equals(k))) {
         return `${found}, a node kind, which belongs in sh:nodeKind`;
     }
-    const supported = [...CODE_TYPES, RDFL.terms.Term].map(shortTerm);
+    const supported = [...CODE_TYPES, RDFL.terms.Term, ...BUILT_IN_LENSES].map(
+        shortTerm,
+    );
     return `${found}, expected one of ${supported.join(", ")}`;
 }
 
@@ -1109,13 +1128,30 @@ function extractProperty(
     const clazzLens = (where: Where): BasicLens<Cont, Extract> =>
         field(SHACL.class, "clazz")
             .and(pred(SHACL.nodeKind).one(undefined))
-            .map(([{ clazz: expected_class }, kindTerm]) => ({
-                // We did not find a type, so use the expected class lens
-                extract: nestedLens(expected_class, kindOf(kindTerm, where), {
-                    message: "Tried extracting class, but no shape was defined",
-                    name: "Found type: ",
-                }).named("extracting class", expected_class),
-            }));
+            .map(([{ clazz: expected_class }, kindTerm]) => {
+                const clazz = namedNode(expected_class);
+                if (isBuiltInLens(clazz)) {
+                    warn(
+                        `rdf-lens: ${where()} uses sh:class ${shortTerm(clazz)}, ` +
+                            "which a SHACL engine reads as a type the value must " +
+                            `have, which is deprecated: use sh:codeType ${shortTerm(clazz)} ` +
+                            "instead, which validation ignores.",
+                        where.property,
+                    );
+                }
+                return {
+                    // We did not find a type, so use the expected class lens
+                    extract: nestedLens(
+                        expected_class,
+                        kindOf(kindTerm, where),
+                        {
+                            message:
+                                "Tried extracting class, but no shape was defined",
+                            name: "Found type: ",
+                        },
+                    ).named("extracting class", expected_class),
+                };
+            });
 
     // A nested object, built with the node shape it refers to. Unlike
     // sh:class, the value needs no type, and the shape no sh:targetClass.
@@ -1138,6 +1174,22 @@ function extractProperty(
     )
         .one(undefined)
         .map((defaultValue) => (defaultValue ? { defaultValue } : {}));
+
+    // What a built-in lens hands code, such as the quads of rdfl:CBD, under
+    // the node kind
+    const builtInLens = (
+        where: Where,
+        codeType: Term,
+    ): BasicLens<Cont, Extract> =>
+        pred(SHACL.nodeKind)
+            .one(undefined)
+            .map((kindTerm) => ({
+                extract: nestedLens(codeType.value, kindOf(kindTerm, where), {
+                    message:
+                        "Tried extracting a built-in lens, but none was found",
+                    name: "Code type: ",
+                }).named("extracting code type", codeType.value),
+            }));
 
     // sh:nodeKind constrains the term, sh:codeType converts it, either alone
     // is enough. Without sh:codeType, sh:datatype converts, under the kind:
@@ -1221,9 +1273,14 @@ function extractProperty(
         // sh:node or sh:class would build. sh:node names the shape itself,
         // so it goes before sh:class, which only names the type of the value.
         const codeType = codeTypeOf.execute(c, ctx.clone());
-        const extract = codeType
-            ? leafLens(where, codeType)
-            : nodeLens(where).or(clazzLens(where), leafLens(where));
+        let extract: BasicLens<Cont, Extract>;
+        if (!codeType) {
+            extract = nodeLens(where).or(clazzLens(where), leafLens(where));
+        } else if (isBuiltInLens(codeType)) {
+            extract = builtInLens(where, codeType);
+        } else {
+            extract = leafLens(where, codeType);
+        }
 
         return pathLens
             .and(nameLens, minCount, maxCount, defaultValueLens, extract)
