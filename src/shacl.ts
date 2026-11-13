@@ -78,6 +78,11 @@ export interface ShapeField {
      * reads the default's own properties (`sh:defaultValue [ ex:age 95 ]`).
      */
     defaultValue?: Cont;
+    /**
+     * Whether each value is an RDF list that extract handles as a whole, as
+     * for sh:memberShape, rather than a list whose members are values.
+     */
+    list?: boolean;
 }
 
 /**
@@ -98,15 +103,16 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
         ([terms, { quads }]) => terms.map((id) => ({ id, quads })),
     );
     const noListExtract = empty<Cont>().map((x) => [x]);
+    // A list is a value of its own when extract handles the list
+    const values = field.list
+        ? noListExtract
+        : thenListExtract.or(noListExtract);
 
     // The default is extracted like any other value, but from the container it
     // was defined in: the shapes graph. So a literal goes through the same
     // datatype conversion, and a node through the same class lens, picking up
     // that shape's own defaults in turn.
-    const defaults = thenListExtract
-        .or(noListExtract)
-        .asMulti()
-        .thenAll(field.extract);
+    const defaults = values.asMulti().thenAll(field.extract);
     const extractDefault = (ctx: LensContext): unknown[] | undefined =>
         field.defaultValue && defaults.execute(field.defaultValue, ctx);
 
@@ -135,7 +141,7 @@ function fieldToLens(field: ShapeField): BasicLens<Cont, unknown> {
     }
 
     return field.path
-        .thenFlat(thenListExtract.or(noListExtract).asMulti())
+        .thenFlat(values.asMulti())
         .thenAll(field.extract)
         .map((x) => x.filter((x) => x !== undefined))
         .map((xs, ctx) => (xs.length === 0 ? (extractDefault(ctx) ?? xs) : xs))
@@ -494,6 +500,23 @@ const CODE_TYPES = [
 ].map((x) => XSD.terms.custom(x));
 
 /**
+ * The classes extractShapes provides lenses for itself. They tell rdf-lens
+ * what to hand code, rather than what the data is, so they belong in
+ * sh:codeType, which validation ignores, not in sh:class, which a SHACL engine
+ * reads as a type the value must have.
+ */
+const BUILT_IN_LENSES = [
+    RDFL.terms.CBD,
+    RDFL.terms.PathLens,
+    RDFL.terms.Context,
+    RDFL.terms.TypedExtract,
+];
+
+function isBuiltInLens(term: Term): boolean {
+    return BUILT_IN_LENSES.some((x) => x.equals(term));
+}
+
+/**
  * Rebuilds a term with this library's data factory, whichever parser made it.
  */
 function normalizeTerm(term: Term): Term {
@@ -604,7 +627,9 @@ function codeTypeProblem(
     if (NODE_KINDS.some(([k]) => codeType.equals(k))) {
         return `${found}, a node kind, which belongs in sh:nodeKind`;
     }
-    const supported = [...CODE_TYPES, RDFL.terms.Term].map(shortTerm);
+    const supported = [...CODE_TYPES, RDFL.terms.Term, ...BUILT_IN_LENSES].map(
+        shortTerm,
+    );
     return `${found}, expected one of ${supported.join(", ")}`;
 }
 
@@ -1109,13 +1134,30 @@ function extractProperty(
     const clazzLens = (where: Where): BasicLens<Cont, Extract> =>
         field(SHACL.class, "clazz")
             .and(pred(SHACL.nodeKind).one(undefined))
-            .map(([{ clazz: expected_class }, kindTerm]) => ({
-                // We did not find a type, so use the expected class lens
-                extract: nestedLens(expected_class, kindOf(kindTerm, where), {
-                    message: "Tried extracting class, but no shape was defined",
-                    name: "Found type: ",
-                }).named("extracting class", expected_class),
-            }));
+            .map(([{ clazz: expected_class }, kindTerm]) => {
+                const clazz = namedNode(expected_class);
+                if (isBuiltInLens(clazz)) {
+                    warn(
+                        `rdf-lens: ${where()} uses sh:class ${shortTerm(clazz)}, ` +
+                            "which a SHACL engine reads as a type the value must " +
+                            `have, which is deprecated: use sh:codeType ${shortTerm(clazz)} ` +
+                            "instead, which validation ignores.",
+                        where.property,
+                    );
+                }
+                return {
+                    // We did not find a type, so use the expected class lens
+                    extract: nestedLens(
+                        expected_class,
+                        kindOf(kindTerm, where),
+                        {
+                            message:
+                                "Tried extracting class, but no shape was defined",
+                            name: "Found type: ",
+                        },
+                    ).named("extracting class", expected_class),
+                };
+            });
 
     // A nested object, built with the node shape it refers to. Unlike
     // sh:class, the value needs no type, and the shape no sh:targetClass.
@@ -1139,6 +1181,71 @@ function extractProperty(
         .one(undefined)
         .map((defaultValue) => (defaultValue ? { defaultValue } : {}));
 
+    // SHACL 1.2: each value is an RDF list, and every member conforms to the
+    // node shape. Code receives an array of the members, in order, each built
+    // with that node shape. sh:nodeKind constrains the list node itself.
+    const memberShapeLens = (where: Where): BasicLens<Cont, Extract> =>
+        pred(SHACL.memberShape)
+            .one()
+            .and(pred(SHACL.nodeKind).one(undefined))
+            .map(([{ id: shape }, kindTerm]) => {
+                const kind = kindOf(kindTerm, where);
+                const member = nestedLens(
+                    shape.value,
+                    nodeKind(undefined, where),
+                    {
+                        message:
+                            "Tried extracting a member shape, but it could not be read",
+                        name: "Member shape: ",
+                    },
+                ).named("extracting member shape", shape.value);
+                return {
+                    list: true,
+                    extract: new BasicLens<Cont, unknown>((c, ctx) => {
+                        if (kind.problem) {
+                            throw new LensError(
+                                kind.problem,
+                                ctx.lineage.slice(),
+                            );
+                        }
+                        if (!kind.allows(c.id.termType)) {
+                            throw kind.violation(c.id, ctx);
+                        }
+                        let members: Term[];
+                        try {
+                            members = RdfList.execute(c, ctx.clone());
+                        } catch {
+                            throw new LensError(
+                                `Expected an RDF list: ${where()} was given ${describeTerm(c.id)}`,
+                                [
+                                    { name: "found", opts: termToString(c.id) },
+                                    ...ctx.lineage.slice(),
+                                ],
+                            );
+                        }
+                        return members.map((id) =>
+                            member.execute({ id, quads: c.quads }, ctx.clone()),
+                        );
+                    }),
+                };
+            });
+
+    // What a built-in lens hands code, such as the quads of rdfl:CBD, under
+    // the node kind
+    const builtInLens = (
+        where: Where,
+        codeType: Term,
+    ): BasicLens<Cont, Extract> =>
+        pred(SHACL.nodeKind)
+            .one(undefined)
+            .map((kindTerm) => ({
+                extract: nestedLens(codeType.value, kindOf(kindTerm, where), {
+                    message:
+                        "Tried extracting a built-in lens, but none was found",
+                    name: "Code type: ",
+                }).named("extracting code type", codeType.value),
+            }));
+
     // sh:nodeKind constrains the term, sh:codeType converts it, either alone
     // is enough. Without sh:codeType, sh:datatype converts, under the kind:
     // `sh:nodeKind sh:Literal; sh:datatype xsd:integer` still gives a number.
@@ -1156,7 +1263,7 @@ function extractProperty(
                 if (!kindTerm && !codeType) {
                     if (!datatype) {
                         throw new LensError(
-                            "Expected sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
+                            "Expected sh:memberShape, sh:node, sh:class, sh:nodeKind, sh:codeType or sh:datatype, found none",
                             ctx.lineage.slice(),
                         );
                     }
@@ -1221,9 +1328,18 @@ function extractProperty(
         // sh:node or sh:class would build. sh:node names the shape itself,
         // so it goes before sh:class, which only names the type of the value.
         const codeType = codeTypeOf.execute(c, ctx.clone());
-        const extract = codeType
-            ? leafLens(where, codeType)
-            : nodeLens(where).or(clazzLens(where), leafLens(where));
+        let extract: BasicLens<Cont, Extract>;
+        if (!codeType) {
+            extract = memberShapeLens(where).or(
+                nodeLens(where),
+                clazzLens(where),
+                leafLens(where),
+            );
+        } else if (isBuiltInLens(codeType)) {
+            extract = builtInLens(where, codeType);
+        } else {
+            extract = leafLens(where, codeType);
+        }
 
         return pathLens
             .and(nameLens, minCount, maxCount, defaultValueLens, extract)
@@ -1539,7 +1655,11 @@ export function extractShapes(
     const seen = new Set<string>();
     const nodeShapes: Shape[] = [];
     for (const q of quads) {
-        if (!q.predicate.equals(SHACL.node)) continue;
+        if (
+            !q.predicate.equals(SHACL.node) &&
+            !q.predicate.equals(SHACL.memberShape)
+        )
+            continue;
         const key = q.object.termType + " " + q.object.value;
         if (seen.has(key)) continue;
         seen.add(key);
