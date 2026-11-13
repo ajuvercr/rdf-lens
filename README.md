@@ -233,7 +233,7 @@ A default is held to `sh:nodeKind` and converted with `sh:codeType` like a value
 
 * All six node kinds are supported: `sh:IRI`, `sh:BlankNode`, `sh:Literal`, `sh:BlankNodeOrIRI`, `sh:BlankNodeOrLiteral` and `sh:IRIOrLiteral`. A value of another kind fails to parse, like a cardinality violation, with an error naming the property and the value. The kind is also checked next to `sh:node` and `sh:class`.
 * Either can be used alone: `sh:nodeKind` hands you the term, `sh:codeType` converts any term (rdf-lens warns when that is a blank node, which only has its label to convert).
-* `sh:codeType` is one of `xsd:string`, `xsd:integer`, `xsd:decimal`, `xsd:float`, `xsd:double`, `xsd:boolean`, `xsd:dateTime`, `xsd:anyURI` or `rdfl:Term`. `xsd:anyURI` gives an IRI, from an IRI or from a string holding an absolute IRI, so `sh:nodeKind sh:IRIOrLiteral; sh:codeType xsd:anyURI` accepts `<https://example.org>` and `"https://example.org"` alike. A string needs a scheme of two or more characters and is not a host and port, so `C:\data` and `localhost:8080` are no IRIs.
+* `sh:codeType` is one of `xsd:string`, `xsd:integer`, `xsd:decimal`, `xsd:float`, `xsd:double`, `xsd:boolean`, `xsd:dateTime`, `xsd:anyURI`, `rdfl:Term`, or one of the special classes below. `xsd:anyURI` gives an IRI, from an IRI or from a string holding an absolute IRI, so `sh:nodeKind sh:IRIOrLiteral; sh:codeType xsd:anyURI` accepts `<https://example.org>` and `"https://example.org"` alike. A string needs a scheme of two or more characters and is not a host and port, so `C:\data` and `localhost:8080` are no IRIs.
 * `sh:codeType rdfl:Term` converts nothing: it hands back the term the parser produced, instead of rebuilding it with this library's data factory. `rdfl:Term` is an rdf-lens extension, not a datatype.
 * Any other `sh:codeType`, a node kind, `xsd:iri` or a typo like `xsd:strin`, and an unknown `sh:nodeKind`, log a warning when the shape is read, and fail once a value is extracted.
 * An `rdfl:EnvVariable` holds a string, so it becomes an IRI when the kind allows one and the value is an absolute IRI, a literal when the kind allows that, and an error otherwise.
@@ -287,11 +287,25 @@ Not checked, no shape describes them: <https://example.org/Writer>
 The same check is available in code, to run in a test for example: `checkShapes(quads)` returns the findings, each with its level, message, property shape and the data node it was found on.
 
 **Special implemented classes**
-Sometimes a plain old javascript objects is not enough, some special classes work out of the box.
-`@prefix rdfs: <https://w3id.org/rdf-lens/ontology#>.`
+Sometimes a plain old javascript object is not enough, so some special classes work out of the box. Give them as `sh:codeType`, as they say what code receives rather than what the data is:
+`@prefix rdfl: <https://w3id.org/rdf-lens/ontology#>.`
 
 * `rdfl:CBD`: Provides a list of quads bounded by the cbd algorithm.
 * `rdfl:PathLens`: Parses a shacl Path and returns a Lens that resolves this path.
 * `rdfl:Context`: Provides a reference to the list of all data quads.
-* `rdfl:TypeExtract`: Extracts according to the `rdf:type` object (including class hierarchy), by using the shape that corresponds to that type.
+* `rdfl:TypedExtract`: Extracts according to the `rdf:type` object (including class hierarchy), by using the shape that corresponds to that type.
+
+```turtle
+[] a sh:NodeShape;
+  sh:targetClass <Bucketizer>;
+  sh:property [
+    sh:name "path";
+    sh:path <timestampPath>;
+    sh:nodeKind sh:BlankNodeOrIRI;   # what the data is, checked by validation too
+    sh:codeType rdfl:PathLens;       # what code receives, ignored by validation
+    sh:maxCount 1;
+  ].
+```
+
+They used to be given as `sh:class`, which still works, but logs a warning: a SHACL engine reads `sh:class rdfl:CBD` as a type the value must have, so validating such a shape rejects every value.
 
