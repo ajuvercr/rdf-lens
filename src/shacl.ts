@@ -1196,6 +1196,25 @@ function extractProperty(
     const minCount = optionalField(SHACL.minCount, "minCount", (x) => +x);
     const maxCount = optionalField(SHACL.maxCount, "maxCount", (x) => +x);
 
+    // Whether a member shape constrains the members themselves, such as
+    // [ sh:datatype xsd:integer ], rather than describing their properties
+    const constrainsValues = ({ id, quads }: Cont): boolean =>
+        !quads.some(
+            (q) => q.subject.equals(id) && q.predicate.equals(SHACL.property),
+        ) &&
+        quads.some(
+            (q) =>
+                q.subject.equals(id) &&
+                [
+                    SHACL.memberShape,
+                    SHACL.node,
+                    SHACL.class,
+                    SHACL.nodeKind,
+                    SHACL.custom("codeType"),
+                    SHACL.datatype,
+                ].some((p) => q.predicate.equals(p)),
+        );
+
     // A nested object, built with the lens cached under key, under the node
     // kind. The lens is looked up when a value is extracted, so the shape it
     // comes from may be read after this property.
@@ -1283,23 +1302,41 @@ function extractProperty(
         .map((defaultValue) => (defaultValue ? { defaultValue } : {}));
 
     // SHACL 1.2: each value is an RDF list, and every member conforms to the
-    // node shape. Code receives an array of the members, in order, each built
-    // with that node shape. sh:nodeKind constrains the list node itself.
+    // member shape. Code receives an array of the members, in order. A member
+    // shape with properties builds each member as a nested object; one
+    // without, such as [ sh:datatype xsd:integer ], constrains the members
+    // themselves, and each member is read as a property's value would be.
+    // sh:nodeKind on the property constrains the list node itself.
     const memberShapeLens = (where: Where): BasicLens<Cont, Extract> =>
         pred(SHACL.memberShape)
             .one()
             .and(pred(SHACL.nodeKind).one(undefined))
-            .map(([{ id: shape }, kindTerm]) => {
+            .map(([shape, kindTerm], ctx) => {
+                // one() gives undefined when the property has none
+                if (!shape) {
+                    throw new LensError(
+                        "Expected sh:memberShape, found none",
+                        ctx.lineage.slice(),
+                    );
+                }
                 const kind = kindOf(kindTerm, where);
-                const member = nestedLens(
-                    shape.value,
-                    nodeKind(undefined, where),
-                    {
-                        message:
-                            "Tried extracting a member shape, but it could not be read",
-                        name: "Member shape: ",
-                    },
-                ).named("extracting member shape", shape.value);
+                let member: BasicLens<Cont, unknown>;
+                if (constrainsValues(shape)) {
+                    member = valueLens(where, shape, ctx).execute(
+                        shape,
+                        ctx.clone(),
+                    ).extract;
+                } else {
+                    member = nestedLens(
+                        shape.id.value,
+                        nodeKind(undefined, where),
+                        {
+                            message:
+                                "Tried extracting a member shape, but it could not be read",
+                            name: "Member shape: ",
+                        },
+                    ).named("extracting member shape", shape.id.value);
+                }
                 return {
                     list: true,
                     extract: new BasicLens<Cont, unknown>((c, ctx) => {
@@ -1416,6 +1453,29 @@ function extractProperty(
                 };
             });
 
+    // How to read a value under the constraints of shape: a property shape,
+    // or a member shape without properties of its own.
+    // SHACL 1.2: tools that would derive the type from the constraints use
+    // sh:codeType instead, so it goes before the nested object sh:node or
+    // sh:class would build. sh:node names the shape itself, so it goes before
+    // sh:class, which only names the type of the value.
+    const valueLens = (
+        where: Where,
+        shape: Cont,
+        ctx: LensContext,
+    ): BasicLens<Cont, Extract> => {
+        const codeType = codeTypeOf.execute(shape, ctx.clone());
+        if (!codeType) {
+            return memberShapeLens(where).or(
+                nodeLens(where),
+                clazzLens(where),
+                leafLens(where),
+            );
+        }
+        if (isBuiltInLens(codeType)) return builtInLens(where, codeType);
+        return leafLens(where, codeType);
+    };
+
     return new BasicLens<Cont, ShapeField>((c, ctx) => {
         // Only worked out for a warning or an error, as it looks at the
         // shape around the property
@@ -1424,26 +1484,14 @@ function extractProperty(
             { property: c.id },
         );
 
-        // SHACL 1.2: tools that would derive the type from the constraints
-        // use sh:codeType instead, so it goes before the nested object
-        // sh:node or sh:class would build. sh:node names the shape itself,
-        // so it goes before sh:class, which only names the type of the value.
-        const codeType = codeTypeOf.execute(c, ctx.clone());
-        let extract: BasicLens<Cont, Extract>;
-        if (!codeType) {
-            extract = memberShapeLens(where).or(
-                nodeLens(where),
-                clazzLens(where),
-                leafLens(where),
-            );
-        } else if (isBuiltInLens(codeType)) {
-            extract = builtInLens(where, codeType);
-        } else {
-            extract = leafLens(where, codeType);
-        }
-
         return pathLens
-            .and(nameLens, minCount, maxCount, defaultValueLens, extract)
+            .and(
+                nameLens,
+                minCount,
+                maxCount,
+                defaultValueLens,
+                valueLens(where, c, ctx),
+            )
             .map((xs) => <ShapeField>Object.assign({}, ...xs))
             .execute(c, ctx);
     });
