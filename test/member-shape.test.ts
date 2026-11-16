@@ -21,12 +21,12 @@ function extract(shapes: string, data: string): Record<string, unknown> {
             q.predicate.equals(RDF.terms.type) &&
             q.object.value === "http://example.org/Bucketizer",
     )!;
-    return <Record<string, unknown>>(
-        extractShapes(quads).lenses[typeQuad.object.value].execute({
-            id: typeQuad.subject,
-            quads,
-        })
-    );
+    return <Record<string, unknown>>extractShapes(quads).lenses[
+        typeQuad.object.value
+    ].execute({
+        id: typeQuad.subject,
+        quads,
+    });
 }
 
 // A bucketizer applies its strategies in order, so they are given as a list
@@ -133,6 +133,81 @@ ex:AnyStrategy a sh:NodeShape;
                 "ex:b a ex:Bucketizer.",
             ),
         ).toEqual({ strategies: [{ size: 5 }] });
+    });
+
+    describe("a member shape without properties constrains the members", () => {
+        const values = (memberShape: string) => `
+[] a sh:NodeShape;
+  sh:targetClass ex:Bucketizer;
+  sh:property [
+    sh:name "values";
+    sh:path ex:value;
+    sh:memberShape ${memberShape};
+    sh:maxCount 1;
+  ].
+`;
+
+        test("sh:datatype converts every member, in order", () => {
+            expect(
+                extract(
+                    values("[ sh:datatype xsd:integer ]"),
+                    "ex:b a ex:Bucketizer; ex:value ( 3 1 2 ).",
+                ),
+            ).toEqual({ values: [3, 1, 2] });
+        });
+
+        test("sh:codeType converts every member", () => {
+            expect(
+                extract(
+                    values(
+                        "[ sh:nodeKind sh:IRIOrLiteral; sh:codeType xsd:string ]",
+                    ),
+                    "ex:b a ex:Bucketizer; ex:value ( ex:a 5 ).",
+                ),
+            ).toEqual({ values: ["http://example.org/a", "5"] });
+        });
+
+        test("sh:nodeKind gives the members as terms", () => {
+            const { values: members } = extract(
+                values("[ sh:nodeKind sh:IRI ]"),
+                "ex:b a ex:Bucketizer; ex:value ( ex:a ex:b ).",
+            );
+            expect((<{ value: string }[]>members).map((x) => x.value)).toEqual([
+                "http://example.org/a",
+                "http://example.org/b",
+            ]);
+        });
+
+        test("sh:nodeKind rejects a member of another kind", () => {
+            expect(() =>
+                extract(
+                    values("[ sh:nodeKind sh:IRI ]"),
+                    "ex:b a ex:Bucketizer; ex:value ( ex:a 5 ).",
+                ),
+            ).toThrow(/sh:IRI/);
+        });
+
+        test("sh:node builds every member with that node shape", () => {
+            expect(
+                extract(
+                    values("[ sh:node ex:Size ]") +
+                        `ex:Size a sh:NodeShape; sh:property [
+                           sh:name "size"; sh:path ex:size;
+                           sh:datatype xsd:integer; sh:maxCount 1 ].`,
+                    "ex:b a ex:Bucketizer; ex:value ( [ ex:size 3 ] ).",
+                ).values,
+            ).toEqual([{ size: 3 }]);
+        });
+
+        test("checkShapes accepts it", () => {
+            const report = checkShapes(
+                parse(
+                    values("[ sh:datatype xsd:integer ]") +
+                        "<b> a ex:Bucketizer; ex:value ( 1 2 ).",
+                ),
+            );
+            expect(report.findings).toEqual([]);
+        });
     });
 
     test("checkShapes reports a member shape that is not defined", () => {

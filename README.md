@@ -253,12 +253,14 @@ A default is held to `sh:nodeKind` and converted with `sh:codeType` like a value
   ].
 ```
 
-`<b> a <Bucketizer>; <strategy> ( [ <size> 3 ] [ <size> 1 ] ).` extracts to `{ "strategies": [ { "size": 3 }, { "size": 1 } ] }`. A value that is no list fails to parse, and `sh:nodeKind` constrains the list node itself. With `sh:class` or `sh:node` instead, a list is unrolled into separate values as before, but a SHACL engine then checks the list node itself against the class or shape, and rejects it.
+`<b> a <Bucketizer>; <strategy> ( [ <size> 3 ] [ <size> 1 ] ).` extracts to `{ "strategies": [ { "size": 3 }, { "size": 1 } ] }`. A value that is no list fails to parse, and `sh:nodeKind` constrains the list node itself. `sh:maxCount 1` says the property takes a single list: without it, every value is a list of its own, and code receives an array of arrays, `[ [ { "size": 3 }, { "size": 1 } ] ]`.
+
+A member shape without properties of its own constrains the members themselves, with `sh:datatype`, `sh:codeType`, `sh:nodeKind`, `sh:node` or `sh:class`, and each member is read as the value of a property with those constraints would be. `sh:memberShape [ sh:datatype xsd:integer ]` reads `( 1 2 3 )` as `[ 1, 2, 3 ]`, and `sh:memberShape [ sh:nodeKind sh:IRI ]` gives the IRIs of the members, in order. With `sh:class` or `sh:node` instead, a list is unrolled into separate values as before, but a SHACL engine then checks the list node itself against the class or shape, and rejects it.
 
 **Which one applies.** The first of these a property has decides how it is extracted:
 
 1. `sh:codeType`: the term, checked against `sh:nodeKind` and converted with the code type. It goes before `sh:class`, as SHACL 1.2 asks tools to prefer it over the type they would derive from the constraints, so `sh:class ex:Pipeline; sh:codeType xsd:anyURI` gives the IRI of the pipeline instead of a nested object. `sh:datatype` describes the data, so it may differ: `sh:datatype xsd:integer; sh:codeType xsd:string` reads `4` as `"4"`.
-2. `sh:memberShape`: an array of the members of the RDF list, in order, each built with that node shape.
+2. `sh:memberShape`: an array of the members of the RDF list, in order, each built with that node shape, or read with its constraints when it has no properties.
 3. `sh:node`: a nested object, built with that node shape.
 4. `sh:class`: a nested object, built with the shape of that class.
 5. `sh:nodeKind`: the term, checked against the kind, and converted with `sh:datatype` when one is given (`sh:datatype xsd:iri` is read as `xsd:anyURI` here). This warns, suggesting `sh:codeType` instead: for `sh:datatype xsd:iri` when the shape is read, for a converting datatype such as `xsd:string` the first time it is given an IRI or a blank node.
